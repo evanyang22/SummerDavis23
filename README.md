@@ -7,7 +7,7 @@ Functions of mirDeep2 (https://github.com/rajewsky-lab/mirdeep2)
 3. Quantifier.pl : maps and quantifiers microRNAs based on microRNA precursors
 
 #### Steps (6_14_Evan_miRNA.ipynb)
-1. Trim files using trimmer (given in ___)
+1. Trim files using trimmer (given in miRNA_trimgalore_script.py)
 2. Store trimmed files in a folder named "Input"
 3. Index builds using bowtie-build in the terminal: $ bowtie-build reference_sequence.fasta index_name
 4. In the Jupyter notebook code, change the precursors, species, matures, output_dir, genome, and outputDir to fit your needs
