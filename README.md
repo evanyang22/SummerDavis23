@@ -57,6 +57,10 @@ In this case, directory to reference genome is : “/home/ehyang4/ncbi_dataset/d
 6. Run it and it should begin processing all the fastq files in the folder and store them into an output folder automatically
 
 
+## Acknowledgements
+
+miRNA_trimgalore_script.py and TotalRNA_trimgalore_script.py created by Felipe
+
 ---------------------
 
 
