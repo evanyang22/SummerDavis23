@@ -10,7 +10,10 @@ Functions of mirDeep2 (https://github.com/rajewsky-lab/mirdeep2)
 1. Trim files using trimmer (given in miRNA_trimgalore_script.py)
 2. Store trimmed files in a folder named "Input"
 3. Index builds using bowtie-build in the terminal: $ bowtie-build reference_sequence.fasta index_name
-4. In the Jupyter notebook code, change the precursors, species, matures, output_dir, genome, and outputDir to fit your needs
+
+Should generate .EBWT files
+ 
+5. In the Jupyter notebook code, change the precursors, species, matures, output_dir, genome, and outputDir to fit your needs
 
 precursors/matures= fasta files with the precursor miRNA and mature miRNA sequences, respectively
 
