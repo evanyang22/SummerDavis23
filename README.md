@@ -13,9 +13,13 @@ Functions of mirDeep2 (https://github.com/rajewsky-lab/mirdeep2)
 4. In the Jupyter notebook code, change the precursors, species, matures, output_dir, genome, and outputDir to fit your needs
 
 precursors/matures= fasta files with the precursor miRNA and mature miRNA sequences, respectively
+
 species= 3 letter index of the species of interest, used to extract the precursor and mature miRNAs from the above fasta files
+
 output_dir= where the results of mapper.pl are stored
+
 genome= prefix of the .ebwt files
+
 outputDir= output directory with the final results of each sample
 
 5. Generate clean .fa files using perl: perl -plane 's/\s+.+$//' < genome.fa > new_genome.fa
