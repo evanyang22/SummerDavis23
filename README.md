@@ -18,7 +18,8 @@ Install trimgalore, fastqc, star,cutadapt
 3. Run a quality control : “fastqc input.fastq”
 4. Trim adapters and low quality bases from the input fastq file : “trim_galore --quality 20 --fastqc --illumina input.fastq”
 5. Generate reference genome index file (Use GCF ones)
-a. Note : Files with “.fna” may need to be renamed to “.fa” Note : Better to use full directories rather than abbreviated ones Command : “STAR --runThreadN 48 -- runMode genomeGenerate --genomeDir genomeDirectory --genomeFastaFiles directory to fasta file(s) --sjdbGTFfile directory to genome GTF file" Note : Only needs to be done once
+
+ Note : Files with “.fna” may need to be renamed to “.fa” Note : Better to use full directories rather than abbreviated ones Command : “STAR --runThreadN 48 -- runMode genomeGenerate --genomeDir genomeDirectory --genomeFastaFiles directory to fasta file(s) --sjdbGTFfile directory to genome GTF file" Note : Only needs to be done once
 
 6. Use STAR to align genome to reference genome Command : “STAR --genomeDir directory to reference genome --readFilesIn directory to fastq files --quantMode GeneCounts”
 In this case, directory to reference genome is : “/home/ehyang4/ncbi_dataset/data”
