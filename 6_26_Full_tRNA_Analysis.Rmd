@@ -530,10 +530,11 @@ write.csv(finalEY, "./JustinSerum.csv")
 ```
 
 ##### Further Analysis of Justin Serum Week by Week
-
+https://rstudio-pubs-static.s3.amazonaws.com/525119_64c1fe6e1a514b89a1ef26d23bf4aae3.html 
+Via NOISeq
 ```{r}
 library(NOISeq)
-#write.table(dfJustinSerum1W,"./test.txt")
+dfJustinSerum1W <- dfJustinSerum[,c(1,2)]
 SampleName <- c("Justin_PO_Serum", "Justin_1w_Serum")
 Time <- c("Pre-Op", "1W")
 
@@ -543,36 +544,67 @@ rownames(factorEY)=factorEY[,1]
 #rownames(factorEY2) <- factorEY[,1]
 
 inputEY=readData(dfJustinSerum1W,factorEY)
-noiseq(inputEY, k = 0.5, norm = "rpkm", 
+NOISEQ1W= noiseq(inputEY, k = 0.5, norm = "rpkm", 
 replicates = "no", 
 factor="Time", conditions=c("Justin_PO_Serum","Justin_1w_Serum"), pnr = 0.2, nss = 5, v = 0.02, lc = 0)
 ```
-
 ```{r}
-seqInfo_EY_JustinSerum1W <- subset(seqInfo_EY, Sheep %in% c("Justin"))[c(1,2),]
-
-dfJustinSerum<-fullDF_filtered%>% select(contains("Justin"))
-dfJustinSerum1W <- dfJustinSerum[,c(1,2)]
-Operation<-factor(seqInfo_EY_JustinSerum1W$Operation, levels = c('Pre', 'Post'))
-
-designEY_JustinSerum1W<-model.matrix(~ Operation)
-
-
-form <- ~ Operation #expression is influenced by both operation and time
-
-param <- SnowParam(4, "SOCK", progressbar = TRUE)
-
-vobjDreamEY <- voomWithDreamWeights(dfJustinSerum1W, form, seqInfo_EY_JustinSerum1W, BPPARAM = param)
-fitmmEY <- dream(vobjDreamEY, form, seqInfo_EY_JustinSerum1W)
-fitmmEY <- treat(fitmmEY, lfc = log2(1.2), trend = TRUE, robust = TRUE)
-
-finalEY <- topTable(fitmmEY, coef = 2, sort.by = "logFC", number = Inf) %>%
-     mutate(log10P = -log10(adj.P.Val), .after = adj.P.Val)
-write.csv(finalEY, "./JustinSerum1W.csv")
-
+NOISEQ1W.deg = degenes(NOISEQ1W, q = 0.8, M = NULL)
 ```
 
+```{r}
+par(mfrow = c(1, 2))
 
+#Plot expression with DEGs highlighted in red
+DE.plot(NOISEQ1W, q = 0.8, graphic = "expr", log.scale = TRUE)
+
+```
+Pre-Op vs 1M
+```{r}
+dfJustinSerum1M <- dfJustinSerum[,c(1,3)]
+SampleName <- c("Justin_PO_Serum", "Justin_1m_Serum")
+Time <- c("Pre-Op", "1M")
+
+factorEY=data.frame(SampleName,Time)
+rownames(factorEY)=factorEY[,1]
+#factorEY2 <- factorEY[,-1]
+#rownames(factorEY2) <- factorEY[,1]
+
+inputEY=readData(dfJustinSerum1M,factorEY)
+NOISEQ1M= noiseq(inputEY, k = 0.5, norm = "rpkm", 
+replicates = "no", 
+factor="Time", conditions=c("Justin_PO_Serum","Justin_1m_Serum"), pnr = 0.2, nss = 5, v = 0.02, lc = 0)
+
+NOISEQ1M.deg = degenes(NOISEQ1M, q = 0.8, M = NULL)
+par(mfrow = c(1, 2))
+
+#Plot expression with DEGs highlighted in red
+DE.plot(NOISEQ1M, q = 0.8, graphic = "expr", log.scale = TRUE)
+
+```
+Pre-Op vs 2M
+```{r}
+dfJustinSerum2M <- dfJustinSerum[,c(1,4)]
+SampleName <- c("Justin_PO_Serum", "Justin_2m_Serum")
+Time <- c("Pre-Op", "2M")
+
+factorEY=data.frame(SampleName,Time)
+rownames(factorEY)=factorEY[,1]
+#factorEY2 <- factorEY[,-1]
+#rownames(factorEY2) <- factorEY[,1]
+
+inputEY=readData(dfJustinSerum2M,factorEY)
+NOISEQ2M= noiseq(inputEY, k = 0.5, norm = "rpkm", 
+replicates = "no", 
+factor="Time", conditions=c("Justin_PO_Serum","Justin_2m_Serum"), pnr = 0.2, nss = 5, v = 0.02, lc = 0)
+
+NOISEQ2M.deg = degenes(NOISEQ2M, q = 0.8, M = NULL)
+par(mfrow = c(1, 2))
+
+#Plot expression with DEGs highlighted in red
+DE.plot(NOISEQ2M, q = 0.8, graphic = "expr", log.scale = TRUE)
+
+```
 #### DGE Analyis of Justin EV 
 
 ```{r}
