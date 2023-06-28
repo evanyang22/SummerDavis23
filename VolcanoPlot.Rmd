@@ -1,0 +1,47 @@
+---
+title: "VolcanoPlot"
+output: html_document
+date: "2023-06-27"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Volcano Plot
+```{r}
+library(readr)
+JustinDF <- read.csv("./JustinEV.csv")
+JulianDF<- read.csv("./JulianEV.csv")
+# add a column of NAs
+JustinDF$diffexpressed <- "NO"
+# if LogFC > 0.6 and adj.P.Val < 0.05, set as "UP" 
+JustinDF$diffexpressed[JustinDF$logFC > 1.0 & JustinDF$adj.P.Val < 0.05] <- "UP"
+# if LogFC < -0.6 and adj.P.Val < 0.05, set as "DOWN"
+JustinDF$diffexpressed[JustinDF$logFC < -1.0 & JustinDF$adj.P.Val < 0.05] <- "DOWN"
+
+JustinDF$delabel <- NA
+JustinDF$delabel[JustinDF$diffexpressed != "NO"] <- JustinDF$X[JustinDF$diffexpressed != "NO"]
+
+ggplot(data=JustinDF, aes(x=logFC, y=-log10(adj.P.Val), col=diffexpressed, label=delabel)) + 
+    geom_point() + 
+    theme_minimal() +
+    geom_text()
+```
+```{r}
+JulianDF$diffexpressed <- "NO"
+# if LogFC > 0.6 and adj.P.Val < 0.05, set as "UP" 
+JulianDF$diffexpressed[JulianDF$logFC > 1.0 & JulianDF$adj.P.Val < 0.05] <- "UP"
+# if LogFC < -0.6 and adj.P.Val < 0.05, set as "DOWN"
+JulianDF$diffexpressed[JulianDF$logFC < -1.0 & JulianDF$adj.P.Val < 0.05] <- "DOWN"
+
+JulianDF$delabel <- NA
+JulianDF$delabel[JulianDF$diffexpressed != "NO"] <- JulianDF$X[JulianDF$diffexpressed != "NO"]
+
+ggplot(data=JulianDF, aes(x=logFC, y=-log10(adj.P.Val), col=diffexpressed, label=delabel)) + 
+    geom_point() + 
+    theme_minimal() +
+    geom_text()
+
+
+```

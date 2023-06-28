@@ -1,0 +1,711 @@
+---
+title: "6_26_Full_tRNA_Analysis"
+output: html_document
+date: "2023-06-26"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Loading in Data
+Creates fullDF, which contains all the EV (summed) and Serum tRNA data
+```{r}
+library(edgeR)
+library(readr)
+library(dplyr)
+serumDF<-read.csv("totalRNA_serum_JuJu.csv", header = TRUE)
+colnames(serumDF) <- c("Genes","Justin_PO_Serum","Justin_1w_Serum","Justin_1m_Serum","Justin_2m_Serum","Julian_PO_Serum","Julian_1w_Serum","Julian_1m_Serum","Julian_2m_Serum")
+cleanSerumDF <- serumDF[,-1]
+rownames(cleanSerumDF) <- serumDF[,1]
+
+seqInfo_EY<-read_excel("./seqInfo.xlsx")
+
+evDF<- read.csv("totalRNA_JuJu_EV.csv", header = TRUE)
+columnHeaders<-colnames(evDF)
+
+cleanEVDF <- evDF[,-1]
+rownames(cleanEVDF) <- evDF[,1]
+
+summedEVDF<- cleanEVDF%>%
+  rowwise()%>%
+  mutate(Justin_PO_EV=sum(c_across(1:3)),
+         Justin_1w_EV=sum(c_across(4:6)),
+         Justin_1m_EV=sum(c_across(7:9)),
+         Justin_2m_EV=sum(c_across(10:12)),
+         Julian_PO_EV=sum(c_across(13:15)),
+         Julian_1w_EV=sum(c_across(16:18)),
+         Julian_1m_EV=sum(c_across(19:21)),
+         Julian_2m_EV=sum(c_across(22:24)))%>%
+  select(Justin_PO_EV,Justin_1w_EV,Justin_1m_EV,Justin_2m_EV,Julian_PO_EV,Julian_1w_EV,Julian_1m_EV,Julian_2m_EV)
+rownames(summedEVDF)<-evDF[,1]
+
+summedEVDF$Genes<- rownames(summedEVDF)
+cleanSerumDF$Genes<-rownames(cleanSerumDF)
+fullDF<-full_join(cleanSerumDF,summedEVDF,by="Genes")
+rownames(fullDF)<-fullDF$Genes
+fullDF<-fullDF %>% select(-c("Genes"))
+```
+
+## Normalization of Data via filtering lowly expressed genes and filterbyExpr
+
+```{r}
+#filtering lowly expressed genes
+fullDF_filtered <- fullDF[apply(fullDF == 0, 1, sum) <= 5, ] # Filtering out number of 0 counts
+#filterbyExpr
+dea<- DGEList(counts=fullDF_filtered,group= seqInfo_EY$Type)
+keep <- filterByExpr(dea)
+dea <- dea[keep,, keep.lib.sizes=FALSE] 
+dea <- calcNormFactors(dea, method = "TMM")
+dea_logcpm <- cpm(dea, log = T)
+```
+Checking via box plot
+```{r}
+# Normalization and box plot to determine distribution
+par(mfrow = c(1,2))
+boxplot(as.data.frame(dea_logcpm), 
+        las=2, 
+        col=as.numeric(dea$samples$group), 
+        main = "Non-normalized Data")
+boxplot(as.data.frame(dea_logcpm), 
+        las=2, 
+        col=as.numeric(dea$samples$group), 
+        main = "Normalized Data ")
+
+```
+Checking via bell curve
+```{r}
+library(tidyverse)
+library(variancePartition)
+library(edgeR)
+library(limma)
+library(RColorBrewer)
+library(readxl)
+library(pheatmap)
+par(mfrow = c(1,2))
+plotMDS(dea_logcpm, 
+        main = "Dimensions 1 & 2", 
+        col = as.numeric(dea$samples$group))
+plotMDS(dea_logcpm, 
+        main = "Dimensions 3 & 4", 
+        col = as.numeric(dea$samples$group), 
+        dim.plot = c(3,4))
+# Density plot to assess distribution after Filtering
+L <- mean(fullDF_filtered$samples$lib.size) * 1e-6
+M <- median(fullDF_filtered$samples$lib.size) * 1e-6
+query <- as.data.frame(dea_logcpm) %>% 
+     pivot_longer(everything(), names_to = "Sample", values_to = "logCPM")
+ggplot(query, aes(x = logCPM, fill = Sample)) +
+                geom_density(
+                        adjust = 1.5,
+                        alpha = 0.4
+                ) +
+                scale_x_continuous(
+                        limits = c(-5,24,2),
+                        expand = c(0,0),
+                        breaks = seq(-5,24,5)
+                ) +
+                scale_y_continuous(
+                        expand = c(0,0)
+                ) +
+                scale_fill_discrete(
+                        breaks = factor(query$Sample)
+                ) +
+                xlim(-5,24) +
+                labs(
+                        x = "log-CPM",
+                        y = "Density",
+                        title = "Merged RNA Density Distribution"
+                ) +
+                geom_vline(
+                     xintercept = log2(10/M + 2/L)
+                ) +
+                theme(
+                        axis.title.x = element_text(margin = margin(10,0,0,0), face = "bold", size = 9),
+                        axis.title.y = element_text(margin = margin(10,10,0,0), face = "bold", size = 9),
+                        plot.title = element_text(face = "bold", hjust = 0.5, size = 12),
+                        panel.background = element_blank(),
+                        panel.grid = element_line(color = "gray90"),
+                        panel.grid.major = element_line(color = "gray95"),
+                        panel.grid.minor = element_blank()
+                )
+                
+
+```
+## PCA
+```{r}
+seqInfo_EY<-read_excel("./seqInfo.xlsx")
+plotpca <- function(df, seq, color, fn, p){ 
+  # df = data.frame that acts as the input for the function.
+  # seq = sequencing info housing the categories that each sample belongs to.
+  # color = colors to be used for PCA plot.
+  # fn = filename used for savin the plot.
+  # p = path for the file.
+  pca_rna <- prcomp(t(df), scale = TRUE, center = TRUE)
+  per_var <- 100*(pca_rna$sdev^2/sum(pca_rna$sdev^2))
+  d <- data.frame("PC1" = pca_rna$x[,1],
+                  "PC2" = pca_rna$x[,2],
+                  "PC3" = pca_rna$x[,3],
+                  "PC4" = pca_rna$x[,4],
+                  "Sheep" = factor(seq$Sheep),
+                  "Source" = seq$Type)
+  g <- ggplot(d, aes(x = PC1, y = PC3)) +
+          geom_point(aes(color = Sheep,
+                         shape = Source,
+                         size=seqInfo_EY$Time_Size),
+                     stroke = 0.8
+          ) +
+          scale_shape_manual(values = c(15, 17)
+          ) +
+          scale_color_manual(values = color
+          ) +
+          labs(
+            x = paste0("PC1, VarExp: ", round(per_var[[1]], 1), "%"),
+            y = paste0("PC2, VarExp: ", round(per_var[[2]], 1), "%"),
+            color = guide_legend(title = "Sheep", size = 18)
+          ) +
+          theme(
+            panel.background = element_blank(),
+            panel.grid.minor = element_blank(),
+            panel.grid.major = element_blank(),
+            text = element_text(size = 18),
+            axis.text.x = element_text(size = 16),
+            axis.text.y = element_text(size = 16),
+            panel.grid = element_line(color = "gray0", linetype = "solid"),
+            legend.key = element_blank(),
+            legend.text = element_text(size = 16),
+            legend.title = element_text(face = "italic")
+          ) +
+          guides(
+            shape = guide_legend(override.aes = list(size = 4)), # Making legend shapes smaller
+            color = guide_legend(override.aes = list(size = 4)), # Making legend colors smaller
+          ) +
+          geom_hline(aes(yintercept = 0), 
+                     color = "gray0") +
+          geom_vline(aes(xintercept = 0),
+                     color = "gray0")
+  ggsave(paste0(fn, "PC1_vs_PC2.tiff"), plot = g, device = "tiff", path = p)
+}
+
+plotpca(dea_logcpm, seqInfo_EY, color = c("#ec696f", "#53dbf3"), fn = "Justin_vs_Julian_PCA_PC1vsPC3", p = "./6_26_PCA")
+```
+
+```{r}
+pca_rna <- prcomp(t(dea_logcpm), scale = TRUE, center = TRUE)
+loadingscores<-pca_rna$rotation[,1]
+gene_scores<-abs(loadingscores)
+gene_score_ranked<-sort(gene_scores,decreasing=TRUE)
+
+top_10_genes<-names(gene_score_ranked[1:20])
+
+top_10_genes
+```
+PCA for Serum
+```{r}
+plotpca <- function(df, seq, color, fn, p){ 
+  # df = data.frame that acts as the input for the function.
+  # seq = sequencing info housing the categories that each sample belongs to.
+  # color = colors to be used for PCA plot.
+  # fn = filename used for savin the plot.
+  # p = path for the file.
+  pca_rna <- prcomp(t(df), scale = TRUE, center = TRUE)
+  per_var <- 100*(pca_rna$sdev^2/sum(pca_rna$sdev^2))
+  d <- data.frame("PC1" = pca_rna$x[,1],
+                  "PC2" = pca_rna$x[,2],
+                  "PC3" = pca_rna$x[,3],
+                  "PC4" = pca_rna$x[,4],
+                  "Sheep" = factor(seq$Sheep),
+                  "Time" = seq$Time)
+  g <- ggplot(d, aes(x = PC1, y = PC2)) +
+          geom_point(aes(color = Time,
+                         shape = Sheep),
+                     size=5.5,
+                     stroke = 0.8
+          ) +
+          scale_shape_manual(values = c(15, 17)
+          ) +
+          scale_color_manual(values = c("#ec696f", "#53dbf1","#538df9","#5b53f9")
+          ) +
+          labs(
+            x = paste0("PC1, VarExp: ", round(per_var[[1]], 1), "%"),
+            y = paste0("PC2, VarExp: ", round(per_var[[2]], 1), "%"),
+            color = guide_legend(title = "Sheep", size = 18)
+          ) +
+          theme(
+            panel.background = element_blank(),
+            panel.grid.minor = element_blank(),
+            panel.grid.major = element_blank(),
+            text = element_text(size = 18),
+            axis.text.x = element_text(size = 16),
+            axis.text.y = element_text(size = 16),
+            panel.grid = element_line(color = "gray0", linetype = "solid"),
+            legend.key = element_blank(),
+            legend.text = element_text(size = 16),
+            legend.title = element_text(face = "italic")
+          ) +
+          guides(
+            shape = guide_legend(override.aes = list(size = 4)), # Making legend shapes smaller
+            color = guide_legend(override.aes = list(size = 4)), # Making legend colors smaller
+          ) +
+          geom_hline(aes(yintercept = 0), 
+                     color = "gray0") +
+          geom_vline(aes(xintercept = 0),
+                     color = "gray0")
+  ggsave(paste0(fn, "PC1_vs_PC2.tiff"), plot = g, device = "tiff", path = p)
+}
+
+seqInfo_EY_Serum<-seqInfo_EY[1:8,]
+
+plotpca(dea_logcpm_Serum, seqInfo_EY_Serum, color = c("#ec696f", "#53dbf1","#538df9","#5b53f9"), fn = "Justin_vs_Julian_PCA_Serum", p = "./6_26_PCA")
+```
+
+PCA for EV
+```{r}
+plotpca <- function(df, seq, color, fn, p){ 
+  # df = data.frame that acts as the input for the function.
+  # seq = sequencing info housing the categories that each sample belongs to.
+  # color = colors to be used for PCA plot.
+  # fn = filename used for savin the plot.
+  # p = path for the file.
+  pca_rna <- prcomp(t(df), scale = TRUE, center = TRUE)
+  per_var <- 100*(pca_rna$sdev^2/sum(pca_rna$sdev^2))
+  d <- data.frame("PC1" = pca_rna$x[,1],
+                  "PC2" = pca_rna$x[,2],
+                  "PC3" = pca_rna$x[,3],
+                  "PC4" = pca_rna$x[,4],
+                  "Sheep" = factor(seq$Sheep),
+                  "Time" = seq$Time)
+  g <- ggplot(d, aes(x = PC1, y = PC2)) +
+          geom_point(aes(color = Time,
+                         shape = Sheep),
+                     size=5.5,
+                     stroke = 0.8
+          ) +
+          scale_shape_manual(values = c(15, 17)
+          ) +
+          scale_color_manual(values = c("#ec696f", "#53dbf1","#538df9","#5b53f9")
+          ) +
+          labs(
+            x = paste0("PC1, VarExp: ", round(per_var[[1]], 1), "%"),
+            y = paste0("PC2, VarExp: ", round(per_var[[2]], 1), "%"),
+            color = guide_legend(title = "Sheep", size = 18)
+          ) +
+          theme(
+            panel.background = element_blank(),
+            panel.grid.minor = element_blank(),
+            panel.grid.major = element_blank(),
+            text = element_text(size = 18),
+            axis.text.x = element_text(size = 16),
+            axis.text.y = element_text(size = 16),
+            panel.grid = element_line(color = "gray0", linetype = "solid"),
+            legend.key = element_blank(),
+            legend.text = element_text(size = 16),
+            legend.title = element_text(face = "italic")
+          ) +
+          guides(
+            shape = guide_legend(override.aes = list(size = 4)), # Making legend shapes smaller
+            color = guide_legend(override.aes = list(size = 4)), # Making legend colors smaller
+          ) +
+          geom_hline(aes(yintercept = 0), 
+                     color = "gray0") +
+          geom_vline(aes(xintercept = 0),
+                     color = "gray0")
+  ggsave(paste0(fn, "PC1_vs_PC2.tiff"), plot = g, device = "tiff", path = p)
+}
+
+seqInfo_EY_EV<-seqInfo_EY[9:16,]
+
+plotpca(dea_logcpm_EV, seqInfo_EY_EV, color = c("#ec696f", "#53dbf1","#538df9","#5b53f9"), fn = "Justin_vs_Julian_PCA_EV", p = "./6_26_PCA")
+```
+
+
+
+## Heat Map
+```{r}
+
+
+#creating an EV Only Dataset
+
+fullEVDF<-fullDF_filtered %>% select(contains("EV"))
+
+dea_EV<- DGEList(counts=fullEVDF)
+keep_EV <- filterByExpr(dea_EV)
+dea_EV <- dea_EV[keep_EV,, keep.lib.sizes=FALSE] 
+dea_EV <- calcNormFactors(dea_EV, method = "TMM")
+dea_logcpm_EV <- cpm(dea_EV, log = T)
+
+#creating an Serum Only Dataset
+
+fullSerumDF<-fullDF_filtered %>% select(contains("Serum"))
+
+dea_Serum<- DGEList(counts=fullSerumDF)
+keep_Serum <- filterByExpr(dea_Serum)
+dea_Serum <- dea_Serum[keep_Serum,, keep.lib.sizes=FALSE] 
+dea_Serum <- calcNormFactors(dea_Serum, method = "TMM")
+dea_logcpm_Serum <- cpm(dea_Serum, log = T)
+```
+Heat Map for Everything
+```{r}
+# Calculating genes with high variance
+var_genes <- apply(dea_logcpm, 1, var)
+
+
+# 10% Top most variable genes
+select_var <- names(sort(var_genes, decreasing = TRUE))[1:(0.01 *length(var_genes))]
+#select_var <- names(sort(var_genes, decreasing = TRUE))[1:20]
+
+# converting them to logcpm
+hvlcpm <- dea_logcpm[select_var,]
+
+# Drawing heatmap
+annot_row = data.frame(Sheep = seqInfo_EY$Sheep,
+                       Source = seqInfo_EY$Type,
+                       Time=seqInfo_EY$Time)
+rownames(annot_row) = colnames(hvlcpm)
+annotation_colors <- list(Sheep = c(Julian = "#ec696f", Justin = "#53dbf3"),
+                          Source = c(EV = "#9552EE", Serum = "#7be692"),
+                          Time=c(PO="#32a6a8",`1W` ="#3269a8",`1M` ="#323ca8",`2M` ="#4e32a8"))
+
+#pdf("./test.tiff", width = 16, height = 16)|
+saveThis <- pheatmap(hvlcpm,
+         cluster_rows = TRUE,
+         cluster_cols = TRUE,
+         clustering_distance_cols = "euclidean",
+         show_colnames = TRUE,
+         show_rownames = TRUE,
+         clustering_method = "ward.D2",
+         border_color = "gray50",
+         scale = "row",
+         annotation_col = annot_row,
+         annotation_colors = annotation_colors,
+         fontsize = 4,
+         fontsize_row = 4,
+         cellwidth = 4,
+         cellheight = 4,
+         col = colorRampPalette(c("#32009F", "white", "firebrick3"))(100))
+
+save_pheatmap_pdf <- function(x, filename, width=7, height=7) {
+   stopifnot(!missing(x))
+   stopifnot(!missing(filename))
+   pdf(filename, width=width, height=height)
+   grid::grid.newpage()
+   grid::grid.draw(x$gtable)
+   dev.off()
+}
+save_pheatmap_pdf(saveThis, "./fullHeat4.pdf")
+
+dev.off()
+```
+
+
+```{r}
+# Calculating genes with high variance
+var_genes <- apply(dea_logcpm_EV, 1, var)
+
+
+# 10% Top most variable genes
+#select_var <- names(sort(var_genes, decreasing = TRUE))[1:(0.1 *length(var_genes))]
+select_var <- names(sort(var_genes, decreasing = TRUE))[1:20]
+
+# converting them to logcpm
+hvlcpm <- dea_logcpm_EV[select_var,]
+
+# Drawing heatmap
+feedThis = c("Justin","Justin","Justin","Justin","Julian","Julian","Julian","Julian")
+         
+annot_row = data.frame(Sheep = feedThis)
+rownames(annot_row) = colnames(hvlcpm)
+annotation_colors <- list(Sheep = c(Julian = "#ec696f", Justin = "#53dbf3"))
+
+#pdf("./test.tiff", width = 16, height = 16)|
+saveThis <- pheatmap(hvlcpm,
+         cluster_rows = TRUE,
+         cluster_cols = TRUE,
+         clustering_distance_cols = "euclidean",
+         show_colnames = FALSE,
+         show_rownames = TRUE,
+         clustering_method = "ward.D2",
+         border_color = "gray50",
+         scale = "row",
+         annotation_col = annot_row,
+         annotation_colors = annotation_colors,
+         fontsize = 5,
+         fontsize_row = 5,
+         cellwidth = 5,
+         cellheight = 5,
+         col = colorRampPalette(c("#32009F", "white", "firebrick3"))(100))
+
+save_pheatmap_pdf <- function(x, filename, width=7, height=7) {
+   stopifnot(!missing(x))
+   stopifnot(!missing(filename))
+   pdf(filename, width=width, height=height)
+   grid::grid.newpage()
+   grid::grid.draw(x$gtable)
+   dev.off()
+}
+save_pheatmap_pdf(saveThis, "./EVs.pdf")
+
+#dev.off()
+```
+
+
+
+```{r}
+# Calculating genes with high variance
+var_genes <- apply(dea_logcpm_Serum, 1, var)
+
+
+# 10% Top most variable genes
+#select_var <- names(sort(var_genes, decreasing = TRUE))[1:(0.1 *length(var_genes))]
+select_var <- names(sort(var_genes, decreasing = TRUE))[1:20]
+
+# converting them to logcpm
+hvlcpm <- dea_logcpm_Serum[select_var,]
+
+# Drawing heatmap
+feedThis = c("Justin","Justin","Justin","Justin","Julian","Julian","Julian","Julian")
+         
+annot_row = data.frame(Sheep = feedThis)
+rownames(annot_row) = colnames(hvlcpm)
+annotation_colors <- list(Sheep = c(Julian = "#ec696f", Justin = "#53dbf3"))
+
+#pdf("./test.tiff", width = 16, height = 16)|
+saveThis <- pheatmap(hvlcpm,
+         cluster_rows = TRUE,
+         cluster_cols = TRUE,
+         clustering_distance_cols = "euclidean",
+         show_colnames = FALSE,
+         show_rownames = TRUE,
+         clustering_method = "ward.D2",
+         border_color = "gray50",
+         scale = "row",
+         annotation_col = annot_row,
+         annotation_colors = annotation_colors,
+         fontsize = 5,
+         fontsize_row = 5,
+         cellwidth = 5,
+         cellheight = 5,
+         col = colorRampPalette(c("#32009F", "white", "firebrick3"))(100))
+
+save_pheatmap_pdf <- function(x, filename, width=7, height=7) {
+   stopifnot(!missing(x))
+   stopifnot(!missing(filename))
+   pdf(filename, width=width, height=height)
+   grid::grid.newpage()
+   grid::grid.draw(x$gtable)
+   dev.off()
+}
+save_pheatmap_pdf(saveThis, "./Serum.pdf")
+
+#dev.off()
+```
+
+## Analysis with Dream
+
+
+
+
+#### DGE Analysis of Justin Serum
+```{r}
+seqInfo_EY_JustinSerum <- subset(seqInfo_EY, Sheep %in% c("Justin"))[1:4,]
+dfJustinSerum<-fullDF_filtered%>% select(contains("Justin"))
+dfJustinSerum <- dfJustinSerum[,1:4]
+Operation<-factor(seqInfo_EY_JustinSerum$Operation, levels = c('Pre', 'Post'))
+
+designEY_JustinSerum<-model.matrix(~ Operation)
+
+
+form <- ~ Operation #expression is influenced by both operation and time
+
+param <- SnowParam(4, "SOCK", progressbar = TRUE)
+
+vobjDreamEY <- voomWithDreamWeights(dfJustinSerum, form, seqInfo_EY_JustinSerum, BPPARAM = param)
+fitmmEY <- dream(vobjDreamEY, form, seqInfo_EY_JustinSerum)
+fitmmEY <- eBayes(fitmmEY)
+
+finalEY <- topTable(fitmmEY, coef = 2, sort.by = "logFC", number = Inf) %>%
+     mutate(log10P = -log10(adj.P.Val), .after = adj.P.Val)
+write.csv(finalEY, "./JustinSerum.csv")
+
+```
+
+##### Further Analysis of Justin Serum Week by Week
+
+```{r}
+library(NOISeq)
+#write.table(dfJustinSerum1W,"./test.txt")
+SampleName <- c("Justin_PO_Serum", "Justin_1w_Serum")
+Time <- c("Pre-Op", "1W")
+
+factorEY=data.frame(SampleName,Time)
+rownames(factorEY)=factorEY[,1]
+#factorEY2 <- factorEY[,-1]
+#rownames(factorEY2) <- factorEY[,1]
+
+inputEY=readData(dfJustinSerum1W,factorEY)
+noiseq(inputEY, k = 0.5, norm = "rpkm", 
+replicates = "no", 
+factor="Time", conditions=c("Justin_PO_Serum","Justin_1w_Serum"), pnr = 0.2, nss = 5, v = 0.02, lc = 0)
+```
+
+```{r}
+seqInfo_EY_JustinSerum1W <- subset(seqInfo_EY, Sheep %in% c("Justin"))[c(1,2),]
+
+dfJustinSerum<-fullDF_filtered%>% select(contains("Justin"))
+dfJustinSerum1W <- dfJustinSerum[,c(1,2)]
+Operation<-factor(seqInfo_EY_JustinSerum1W$Operation, levels = c('Pre', 'Post'))
+
+designEY_JustinSerum1W<-model.matrix(~ Operation)
+
+
+form <- ~ Operation #expression is influenced by both operation and time
+
+param <- SnowParam(4, "SOCK", progressbar = TRUE)
+
+vobjDreamEY <- voomWithDreamWeights(dfJustinSerum1W, form, seqInfo_EY_JustinSerum1W, BPPARAM = param)
+fitmmEY <- dream(vobjDreamEY, form, seqInfo_EY_JustinSerum1W)
+fitmmEY <- treat(fitmmEY, lfc = log2(1.2), trend = TRUE, robust = TRUE)
+
+finalEY <- topTable(fitmmEY, coef = 2, sort.by = "logFC", number = Inf) %>%
+     mutate(log10P = -log10(adj.P.Val), .after = adj.P.Val)
+write.csv(finalEY, "./JustinSerum1W.csv")
+
+```
+
+
+#### DGE Analyis of Justin EV 
+
+```{r}
+seqInfo_EY_JustinEV <- subset(seqInfo_EY, Sheep %in% c("Justin"))[5:8,]
+dfJustinEV<-fullDF_filtered%>% select(contains("Justin"))
+dfJustinEV <- dfJustinEV[,5:8]
+Operation<-factor(seqInfo_EY_JulianSerum$Operation, levels = c('Pre', 'Post'))
+
+designEY_JustinEV<-model.matrix(~ Operation)
+
+form <- ~ Operation #expression is influenced by both operation and time
+
+param <- SnowParam(4, "SOCK", progressbar = TRUE)
+
+vobjDreamEY <- voomWithDreamWeights(dfJustinEV, form, seqInfo_EY_JustinEV, BPPARAM = param)
+fitmmEY <- dream(vobjDreamEY, form, seqInfo_EY_JustinEV)
+fitmmEY <- eBayes(fitmmEY)
+
+finalEY <- topTable(fitmmEY, coef = 2, sort.by = "logFC", number = Inf) %>%
+     mutate(log10P = -log10(adj.P.Val), .after = adj.P.Val)
+write.csv(finalEY, "./JustinEV.csv")
+
+```
+
+#### Julian EV DGE
+```{r}
+seqInfo_EY_JulianEV <- subset(seqInfo_EY, Sheep %in% c("Julian"))[5:8,]
+dfJulianEV<-fullDF_filtered%>% select(contains("Julian"))
+dfJulianEV <- dfJulianEV[,5:8]
+Operation<-factor(seqInfo_EY_JulianSerum$Operation, levels = c('Pre', 'Post'))
+
+designEY_JulianEV<-model.matrix(~ Operation)
+
+form <- ~ Operation #expression is influenced by both operation and time
+
+param <- SnowParam(4, "SOCK", progressbar = TRUE)
+
+vobjDreamEY <- voomWithDreamWeights(dfJulianEV, form, seqInfo_EY_JulianEV, BPPARAM = param)
+fitmmEY <- dream(vobjDreamEY, form, seqInfo_EY_JulianEV)
+fitmmEY <- eBayes(fitmmEY)
+
+finalEY <- topTable(fitmmEY, coef = 2, sort.by = "logFC", number = Inf) %>%
+     mutate(log10P = -log10(adj.P.Val), .after = adj.P.Val)
+write.csv(finalEY, "./JulianEV.csv")
+
+```
+#### DGE Analysis of Julian Serum
+```{r}
+seqInfo_EY_JulianSerum <- subset(seqInfo_EY, Sheep %in% c("Julian"))[1:4,]
+dfJulianSerum<-fullDF_filtered%>% select(contains("Julian"))
+dfJulianSerum <- dfJulianSerum[,1:4]
+Operation<-factor(seqInfo_EY_JulianSerum$Operation, levels = c('Pre', 'Post'))
+
+designEY_JulianSerum<-model.matrix(~ Operation)
+
+form <- ~ Operation #expression is influenced by both operation and time
+
+param <- SnowParam(4, "SOCK", progressbar = TRUE)
+
+vobjDreamEY <- voomWithDreamWeights(dfJulianSerum, form, seqInfo_EY_JulianSerum, BPPARAM = param)
+fitmmEY <- dream(vobjDreamEY, form, seqInfo_EY_JulianSerum)
+fitmmEY <- eBayes(fitmmEY)
+
+finalEY <- topTable(fitmmEY, coef = 2, sort.by = "logFC", number = Inf) %>%
+     mutate(log10P = -log10(adj.P.Val), .after = adj.P.Val)
+write.csv(finalEY, "./JulianSerum.csv")
+
+```
+
+
+
+
+#### bad below
+
+
+```{r dream warning = FALSE, message = FALSE}
+# Setting up design matrix
+design <- model.matrix(~ seqInfo_EY$Type, seqInfo_EY)
+colnames(design) <- c("(Intercept)", "Source EV")
+# Dream
+param <- SnowParam(4, "SOCK", progressbar = TRUE)
+form <- ~ Type + (1|Sheep)
+vobjDream <- voomWithDreamWeights(fullDF, form, seqInfo_EY, BPPARAM = param)
+fitmm <- dream(vobjDream, form, seqInfo_EY)
+fitmm <- eBayes(fitmm)
+head(fitmm$design, 3)
+# Here, the log fold change is relative to the EV. E.g. logFC = 10 means that miRNA is 20 times more expressed in the EV when compared to the cell. 
+```
+```{r}
+final <- topTable(fitmm, coef = "TypeSerum", sort.by = "logFC", number = Inf) %>%
+     mutate(log10P = -log10(adj.P.Val), .after = adj.P.Val)
+write.csv(final, "./test.csv")
+rm(list = setdiff(ls(), c("m_rna_logcpm", "final", "e_rna_logcpm", "c_rna_logcpm", "fitmm")))
+```
+
+Evan FIrst try below
+
+```{r}
+seqInfo_EY_Justin <- subset(seqInfo_EY, Sheep %in% c("Justin"))
+dfJustin<-fullDF_filtered%>% select(contains("Justin"))
+
+designEY_Justin<-model.matrix(~ seqInfo_EY_Justin$Operation)
+
+form <- ~ Operation + (1|Type)  #these are the variables that may change 
+
+param <- SnowParam(4, "SOCK", progressbar = TRUE)
+
+vobjDreamEY <- voomWithDreamWeights(dfJustin, form, seqInfo_EY_Justin, BPPARAM = param)
+fitmmEY <- dream(vobjDreamEY, form, seqInfo_EY_Justin)
+fitmmEY <- eBayes(fitmmEY)
+
+finalEY <- topTable(fitmmEY, coef = "OperationPre", sort.by = "logFC", number = Inf) %>%
+     mutate(log10P = -log10(adj.P.Val), .after = adj.P.Val)
+write.csv(finalEY, "./Justin_All22.csv")
+
+```
+
+```{r}
+seqInfo_EY_Julian <- subset(seqInfo_EY, Sheep %in% c("Julian"))
+dfJulian<-fullDF_filtered%>% select(contains("Julian"))
+
+designEY_Julian<-model.matrix(~ seqInfo_EY_Julian$Operation)
+
+form <- ~ Operation + (1|Type)  #these are the variables that may change 
+
+param <- SnowParam(4, "SOCK", progressbar = TRUE)
+
+vobjDreamEY <- voomWithDreamWeights(dfJulian, form, seqInfo_EY_Julian, BPPARAM = param)
+fitmmEY <- dream(vobjDreamEY, form, seqInfo_EY_Julian)
+fitmmEY <- eBayes(fitmmEY)
+
+finalEY <- topTable(fitmmEY, coef = "OperationPre", sort.by = "logFC", number = Inf) %>%
+     mutate(log10P = -log10(adj.P.Val), .after = adj.P.Val)
+write.csv(finalEY, "./Julian_All22.csv")
+
+```
