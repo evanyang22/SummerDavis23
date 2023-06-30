@@ -1,0 +1,130 @@
+---
+title: "6_23_DGE"
+output: html_document
+date: "2023-06-23"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# DGE
+```{r}
+#loading in my data
+
+library(edgeR)
+library(readr)
+library(dplyr)
+serumDF<-read.csv("totalRNA_serum_JuJu.csv", header = TRUE)
+colnames(serumDF) <- c("Genes","Justin_PO_Serum","Justin_1w_Serum","Justin_1m_Serum","Justin_2m_Serum","Julian_PO_Serum","Julian_1w_Serum","Julian_1m_Serum","Julian_2m_Serum")
+cleanSerumDF <- serumDF[,-1]
+rownames(cleanSerumDF) <- serumDF[,1]
+
+evDF<- read.csv("totalRNA_JuJu_EV.csv", header = TRUE)
+columnHeaders<-colnames(evDF)
+newColNames<-c("Genes")
+for (header in columnHeaders) {
+  if(grepl("Justin", header)){
+    newColNames<-append(newColNames,"Justin")
+  }
+  if(grepl("Julian", header)){
+    newColNames<-append(newColNames,"Julian")
+  }
+}
+#colnames(evDF)<-newColNames
+cleanEVDF <- evDF[,-1]
+rownames(cleanEVDF) <- evDF[,1]
+
+summedEVDF<- cleanEVDF%>%
+  rowwise()%>%
+  mutate(Justin_PO_EV=sum(c_across(1:3)),
+         Justin_1w_EV=sum(c_across(4:6)),
+         Justin_1m_EV=sum(c_across(7:9)),
+         Justin_2m_EV=sum(c_across(10:12)),
+         Julian_PO_EV=sum(c_across(13:15)),
+         Julian_1w_EV=sum(c_across(16:18)),
+         Julian_1m_EV=sum(c_across(19:21)),
+         Julian_2m_EV=sum(c_across(22:24)))%>%
+  select(Justin_PO_EV,Justin_1w_EV,Justin_1m_EV,Justin_2m_EV,Julian_PO_EV,Julian_1w_EV,Julian_1m_EV,Julian_2m_EV)
+rownames(summedEVDF)<-evDF[,1]
+
+summedEVDF$Genes<- rownames(summedEVDF)
+cleanSerumDF$Genes<-rownames(cleanSerumDF)
+fullDF<-full_join(cleanSerumDF,summedEVDF,by="Genes")
+rownames(fullDF)<-fullDF$Genes
+fullDF<-fullDF %>% select(-c("Genes"))
+```
+
+```{r}
+library('variancePartition')
+library('edgeR')
+library('BiocParallel')
+library(readxl)
+#data(varPartDEdata)
+
+# filter genes by number of counts
+isexpr = rowSums(cpm(fullDF)>0.1) >= 5
+
+# Standard usage of limma/voom
+dge = DGEList( fullDF[isexpr,] )
+dge = calcNormFactors( dge )
+
+# make this vignette faster by analyzing a subset of genes
+#dge = dge[1:1000,]
+
+#reading in sequencing info
+seqInfo_EY<-read_excel("./seqInfo.xlsx")
+```
+
+```{r}
+
+# apply duplicateCorrelation is two rounds
+design = model.matrix( ~ Type, seqInfo_EY)
+vobj_tmp = voom( dge, design, plot=FALSE)
+dupcor <- duplicateCorrelation(vobj_tmp,design,block=seqInfo_EY$Sheep)
+
+# run voom considering the duplicateCorrelation results
+# in order to compute more accurate precision weights
+# Otherwise, use the results from the first voom run
+vobj = voom( dge, design, plot=FALSE, block=seqInfo_EY$Sheep, correlation=dupcor$consensus)
+
+# Estimate linear mixed model with a single variance component
+# Fit the model for each gene, 
+dupcor <- duplicateCorrelation(vobj, design, block=seqInfo_EY$Sheep)
+
+# But this step uses only the genome-wide average for the random effect
+fitDupCor <- lmFit(vobj, design, block=seqInfo_EY$Sheep, correlation=dupcor$consensus)
+
+# Fit Empirical Bayes for moderated t-statistics
+fitDupCor <- eBayes( fitDupCor )
+```
+#analyzing the differences between each sheep 
+```{r}
+# Specify parallel processing parameters
+# this is used implicitly by dream() to run in parallel
+# = SnowParam(4, "SOCK", progressbar=TRUE)
+#param = SnowParam(4, "SOCK")
+
+# The variable to be tested must be a fixed effect
+form <- ~ Sheep + (1|Type) 
+# we want to know the difference between the sheeps with a fixed TYPE of EV/SERUM
+
+# estimate weights using linear mixed model of dream
+vobjDream = voomWithDreamWeights( dge, form, seqInfo_EY )
+
+# Fit the dream model on each gene
+# By default, uses the Satterthwaite approximation for the hypothesis test
+fitmm = dream( vobjDream, form, seqInfo_EY )
+fitmm = eBayes(fitmm)
+```
+
+```{r}
+head(fitmm$design, 3)
+topTable( fitmm, coef='SheepJustin', number=3 )
+
+```
+
+```{r}
+final <- topTable(fitmm, coef = "SheepJustin", sort.by = "logFC", number = Inf) %>%
+     mutate(log10P = -log10(adj.P.Val), .after = adj.P.Val)
+```

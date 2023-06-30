@@ -1,0 +1,212 @@
+---
+title: "6_30_totalRNA_DGE"
+output: html_document
+date: "2023-06-30"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Loading in Data
+Creates fullDF, which contains all the EV (summed) and Serum tRNA data
+```{r}
+library(edgeR)
+library(readr)
+library(dplyr)
+serumDF<-read.csv("totalRNA_serum_JuJu.csv", header = TRUE)
+colnames(serumDF) <- c("Genes","Justin_PO_Serum","Justin_1w_Serum","Justin_1m_Serum","Justin_2m_Serum","Julian_PO_Serum","Julian_1w_Serum","Julian_1m_Serum","Julian_2m_Serum")
+cleanSerumDF <- serumDF[,-1]
+rownames(cleanSerumDF) <- serumDF[,1]
+
+seqInfo_EY<-read_excel("./seqInfo.xlsx")
+
+evDF<- read.csv("totalRNA_JuJu_EV.csv", header = TRUE)
+columnHeaders<-colnames(evDF)
+
+cleanEVDF <- evDF[,-1]
+rownames(cleanEVDF) <- evDF[,1]
+
+summedEVDF<- cleanEVDF%>%
+  rowwise()%>%
+  mutate(Justin_PO_EV=sum(c_across(1:3)),
+         Justin_1w_EV=sum(c_across(4:6)),
+         Justin_1m_EV=sum(c_across(7:9)),
+         Justin_2m_EV=sum(c_across(10:12)),
+         Julian_PO_EV=sum(c_across(13:15)),
+         Julian_1w_EV=sum(c_across(16:18)),
+         Julian_1m_EV=sum(c_across(19:21)),
+         Julian_2m_EV=sum(c_across(22:24)))%>%
+  select(Justin_PO_EV,Justin_1w_EV,Justin_1m_EV,Justin_2m_EV,Julian_PO_EV,Julian_1w_EV,Julian_1m_EV,Julian_2m_EV)
+rownames(summedEVDF)<-evDF[,1]
+
+summedEVDF$Genes<- rownames(summedEVDF)
+cleanSerumDF$Genes<-rownames(cleanSerumDF)
+fullDF<-full_join(cleanSerumDF,summedEVDF,by="Genes")
+rownames(fullDF)<-fullDF$Genes
+fullDF<-fullDF %>% select(-c("Genes"))
+```
+
+## Working with Serum
+###Normalizing Serum
+```{r}
+#normalizing it two ways
+cleanSerumDF<-cleanSerumDF %>% select(-c("Genes"))
+serumDF_filtered <- cleanSerumDF[apply(cleanSerumDF == 0, 1, sum) <= 4, ]
+
+serumDGE<- DGEList(counts=serumDF_filtered,group= seqInfo_EY$Type[1:8])
+keep <- filterByExpr(serumDGE)
+serumDGE <- serumDGE[keep,, keep.lib.sizes=FALSE] 
+#normalizing via calcNormFactors()
+serumDGE<-calcNormFactors(serumDGE, method = "TMM")
+serumNormDF<-cpm(serumDGE,log=T)
+
+
+```
+### Analyzing Justin Serum Pre vs Post
+```{r}
+seqInfo_EY_JustinSerum <- subset(seqInfo_EY, Sheep %in% c("Justin"))[1:4,] # subsetting sequence info
+
+dfJustinSerum <- serumNormDF[,1:4]# subsetting normalized dataframe
+Operation<-factor(seqInfo_EY_JustinSerum$Operation, levels = c('Pre', 'Post')) #setting "Pre" as reference level
+
+designEY_JustinSerum<-model.matrix(~ Operation)
+
+
+form <- ~ Operation #expression is influenced by operation
+
+param <- SnowParam(4, "SOCK", progressbar = TRUE)
+
+vobjDreamEY <- voomWithDreamWeights(dfJustinSerum, form, seqInfo_EY_JustinSerum, BPPARAM = param)
+fitmmEY <- dream(vobjDreamEY, form, seqInfo_EY_JustinSerum)
+fitmmEY <- eBayes(fitmmEY)
+
+finalEY <- topTable(fitmmEY, coef = 2, sort.by = "logFC", number = Inf) %>%
+     mutate(log10P = -log10(adj.P.Val), .after = adj.P.Val)
+write.csv(finalEY, "./JustinSerum_PreVsPost.csv")
+
+
+```
+### Analyzing Julian Serum Pre vs Post
+```{r}
+seqInfo_EY_JulianSerum <- subset(seqInfo_EY, Sheep %in% c("Julian"))[5:8,] # subsetting sequence info
+
+dfJulianSerum <- serumNormDF[,5:8]# subsetting normalized dataframe
+Operation<-factor(seqInfo_EY_JulianSerum$Operation, levels = c('Pre', 'Post')) #setting "Pre" as reference level
+
+designEY_JulianSerum<-model.matrix(~ Operation)
+
+
+form <- ~ Operation #expression is influenced by operation
+
+param <- SnowParam(4, "SOCK", progressbar = TRUE)
+
+vobjDreamEY <- voomWithDreamWeights(dfJulianSerum, form, seqInfo_EY_JulianSerum, BPPARAM = param)
+fitmmEY <- dream(vobjDreamEY, form, seqInfo_EY_JulianSerum)
+fitmmEY <- eBayes(fitmmEY)
+
+finalEY <- topTable(fitmmEY, coef = 2, sort.by = "logFC", number = Inf) %>%
+     mutate(log10P = -log10(adj.P.Val), .after = adj.P.Val)
+write.csv(finalEY, "./JulianSerum_PreVsPost.csv")
+
+
+```
+### Analyzing Julian (no surgery) vs Justin (surgery) Post-Op Serum
+```{r}
+seqInfo_EY_PostOP <- subset(seqInfo_EY, Time %in% c("1W","1M","2M"))[1:6,] # subsetting sequence info
+
+
+
+dfPostOPSerum <- serumNormDF[,c(2:4,6:8)]# subsetting normalized dataframe
+
+
+Sheep<-factor(seqInfo_EY_PostOP$Sheep, levels = c('Julian', 'Justin')) #setting "Julian" as reference level, it has 0 on design matrix
+
+designEY_PostOPSerum<-model.matrix(~ Sheep)
+
+
+
+form <- ~ Sheep #expression is influenced by operation
+
+param <- SnowParam(4, "SOCK", progressbar = TRUE)
+
+vobjDreamEY <- voomWithDreamWeights(dfPostOPSerum, form, seqInfo_EY_PostOP, BPPARAM = param)
+fitmmEY <- dream(vobjDreamEY, form, seqInfo_EY_PostOP)
+fitmmEY <- eBayes(fitmmEY)
+
+finalEY <- topTable(fitmmEY, coef = 2, sort.by = "logFC", number = Inf) %>%
+     mutate(log10P = -log10(adj.P.Val), .after = adj.P.Val)
+write.csv(finalEY, "./PostOPSerum_JulianVsJustin.csv")
+
+
+```
+## Analyzing EV
+
+###Normalizing EV
+```{r}
+
+
+finalSummedEVDF<-summedEVDF %>% select(-c("Genes"))
+row.names(finalSummedEVDF)<- summedEVDF$Genes
+
+#EVDF_filtered <- summedEVDF[apply(cleanEVDF == 0, 1, sum) <= 4, ]
+EVDF_filtered<-finalSummedEVDF
+
+EVDGE<- DGEList(counts=EVDF_filtered,group= seqInfo_EY$Type[9:16])
+keep <- filterByExpr(EVDGE)
+EVDGE <- EVDGE[keep,, keep.lib.sizes=FALSE] 
+#normalizing via calcNormFactors()
+
+EVDGE<-calcNormFactors(EVDGE, method = "TMM")
+EVNormDF<-cpm(EVDGE,log=T)
+
+```
+
+
+### Analyzing Justin EV
+```{r}
+seqInfo_EY_JustinEV <- subset(seqInfo_EY, Sheep %in% c("Justin"))[1:4,]
+
+dfJustinEV <- EVNormDF[,1:4]
+Operation<-factor(seqInfo_EY_JustinEV$Operation, levels = c('Pre', 'Post'))
+
+designEY_JustinEV<-model.matrix(~ Operation)
+
+form <- ~ Operation #expression is influenced by both operation and time
+
+param <- SnowParam(4, "SOCK", progressbar = TRUE)
+
+vobjDreamEY <- voomWithDreamWeights(dfJustinEV, form, seqInfo_EY_JustinEV, BPPARAM = param)
+fitmmEY <- dream(vobjDreamEY, form, seqInfo_EY_JustinEV)
+fitmmEY <- eBayes(fitmmEY)
+
+finalEY <- topTable(fitmmEY, coef = 2, sort.by = "logFC", number = Inf) %>%
+     mutate(log10P = -log10(adj.P.Val), .after = adj.P.Val)
+write.csv(finalEY, "./JustinEV_PreVsPost.csv")
+
+
+```
+### Analyzing Julian EV
+```{r}
+seqInfo_EY_JulianEV <- subset(seqInfo_EY, Sheep %in% c("Julian"))[5:8,]
+
+dfJulianEV <- EVNormDF[,5:8]
+Operation<-factor(seqInfo_EY_JulianEV$Operation, levels = c('Pre', 'Post'))
+
+designEY_JulianEV<-model.matrix(~ Operation)
+
+
+form <- ~ Operation #expression is influenced by both operation and time
+
+param <- SnowParam(4, "SOCK", progressbar = TRUE)
+
+vobjDreamEY <- voomWithDreamWeights(dfJulianEV, form, seqInfo_EY_JulianEV, BPPARAM = param)
+fitmmEY <- dream(vobjDreamEY, form, seqInfo_EY_JulianEV)
+fitmmEY <- eBayes(fitmmEY)
+
+finalEY <- topTable(fitmmEY, coef = 2, sort.by = "logFC", number = Inf) %>%
+     mutate(log10P = -log10(adj.P.Val), .after = adj.P.Val)
+write.csv(finalEY, "./JulianEV_PreVsPost.csv")
+
+
+```

@@ -1,0 +1,358 @@
+---
+title: "TotalRNA_JuJu_Analysis"
+output: html_document
+date: "2023-06-22"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Preliminary Analysis - PCA and MDS using EdgeR
+https://web.stanford.edu/class/bios221/labs/rnaseq/lab_4_rnaseq.html 
+
+```{r}
+library(edgeR)
+library(readr)
+library(dplyr)
+serumDF<-read.csv("totalRNA_serum_JuJu.csv", header = TRUE)
+colnames(serumDF) <- c("Genes","Justin_PO_Serum","Justin_1w_Serum","Justin_1m_Serum","Justin_2m_Serum","Julian_PO_Serum","Julian_1w_Serum","Julian_1m_Serum","Julian_2m_Serum")
+cleanSerumDF <- serumDF[,-1]
+rownames(cleanSerumDF) <- serumDF[,1]
+
+seqInfo_EY<-read_excel("./seqInfo.xlsx")
+
+evDF<- read.csv("totalRNA_JuJu_EV.csv", header = TRUE)
+columnHeaders<-colnames(evDF)
+newColNames<-c("Genes")
+for (header in columnHeaders) {
+  if(grepl("Justin", header)){
+    newColNames<-append(newColNames,"Justin")
+  }
+  if(grepl("Julian", header)){
+    newColNames<-append(newColNames,"Julian")
+  }
+}
+#colnames(evDF)<-newColNames
+cleanEVDF <- evDF[,-1]
+rownames(cleanEVDF) <- evDF[,1]
+
+summedEVDF<- cleanEVDF%>%
+  rowwise()%>%
+  mutate(Justin_PO_EV=sum(c_across(1:3)),
+         Justin_1w_EV=sum(c_across(4:6)),
+         Justin_1m_EV=sum(c_across(7:9)),
+         Justin_2m_EV=sum(c_across(10:12)),
+         Julian_PO_EV=sum(c_across(13:15)),
+         Julian_1w_EV=sum(c_across(16:18)),
+         Julian_1m_EV=sum(c_across(19:21)),
+         Julian_2m_EV=sum(c_across(22:24)))%>%
+  select(Justin_PO_EV,Justin_1w_EV,Justin_1m_EV,Justin_2m_EV,Julian_PO_EV,Julian_1w_EV,Julian_1m_EV,Julian_2m_EV)
+rownames(summedEVDF)<-evDF[,1]
+```
+
+```{r}
+seqInfo_EY<-read_excel("./seqInfo.xlsx")
+```
+
+```{r}
+summedEVDF$Genes<- rownames(summedEVDF)
+cleanSerumDF$Genes<-rownames(cleanSerumDF)
+fullDF<-full_join(cleanSerumDF,summedEVDF,by="Genes")
+rownames(fullDF)<-fullDF$Genes
+fullDF<-fullDF %>% select(-c("Genes"))
+```
+Normalization of data by removing lowly expressed genes 
+```{r}
+summedEVDF_filtered <- summedEVDF[apply(summedEVDF == 0, 1, sum) <= 4
+                         , ] # Filtering out number of 0 counts
+cleanSerumDF_filtered <- cleanSerumDF[apply(cleanSerumDF == 0, 1, sum) <= 4
+                                      , ] # Filtering out number of 0 counts
+fullDF_filtered <- fullDF[apply(fullDF == 0, 1, sum) <= 14, ] # Filtering out number of 0 counts
+```
+```{r}
+postOPDF<-fullDF_filtered %>% select(-contains("PO"))
+```
+
+```{r}
+#dea <- DGEList(counts = postOPDF) # missing a group
+dea<- DGEList(counts=fullDF_filtered,group=seqInfo_EY$Sheep)
+keep <- filterByExpr(dea)
+dea <- dea[keep,] #i just added this - EY, may need to look back at ur code, changes PCA
+dea <- calcNormFactors(dea, method = "TMM")
+dea_logcpm <- cpm(dea, log = T)
+
+```
+
+## Plotting Using Felipe PCA
+```{r}
+plotpca <- function(df, seq, color, fn, p){ 
+  # df = data.frame that acts as the input for the function.
+  # seq = sequencing info housing the categories that each sample belongs to.
+  # color = colors to be used for PCA plot.
+  # fn = filename used for savin the plot.
+  # p = path for the file.
+  pca_rna <- prcomp(t(df), scale = TRUE, center = TRUE)
+  per_var <- 100*(pca_rna$sdev^2/sum(pca_rna$sdev^2))
+  d <- data.frame("PC1" = pca_rna$x[,1],
+                  "PC2" = pca_rna$x[,2],
+                  "PC3" = pca_rna$x[,3],
+                  "PC4" = pca_rna$x[,4],
+                  "Sheep" = factor(seq$Sheep),
+                  "Source" = seq$Type)
+  g <- ggplot(d, aes(x = PC1, y = PC2)) +
+          geom_point(aes(color = Sheep,
+                         shape = Source,
+                         size=seqInfo_EY$Time_Size),
+                     stroke = 0.8
+          ) +
+          scale_shape_manual(values = c(15, 17)
+          ) +
+          scale_color_manual(values = color
+          ) +
+          labs(
+            x = paste0("PC1, VarExp: ", round(per_var[[1]], 1), "%"),
+            y = paste0("PC2, VarExp: ", round(per_var[[2]], 1), "%"),
+            color = guide_legend(title = "Sheep", size = 18)
+          ) +
+          theme(
+            panel.background = element_blank(),
+            panel.grid.minor = element_blank(),
+            panel.grid.major = element_blank(),
+            text = element_text(size = 18),
+            axis.text.x = element_text(size = 16),
+            axis.text.y = element_text(size = 16),
+            panel.grid = element_line(color = "gray0", linetype = "solid"),
+            legend.key = element_blank(),
+            legend.text = element_text(size = 16),
+            legend.title = element_text(face = "italic")
+          ) +
+          guides(
+            shape = guide_legend(override.aes = list(size = 4)), # Making legend shapes smaller
+            color = guide_legend(override.aes = list(size = 4)), # Making legend colors smaller
+          ) +
+          geom_hline(aes(yintercept = 0), 
+                     color = "gray0") +
+          geom_vline(aes(xintercept = 0),
+                     color = "gray0")
+  ggsave(paste0(fn, "PC1_vs_PC2.tiff"), plot = g, device = "tiff", path = p)
+}
+
+plotpca(dea_logcpm, seqInfo_EY, color = c("#ec696f", "#53dbf3"), fn = "Justin_vs_Julian_PCA", p = "./6_26_PCA")
+```
+
+##Plotting using other PCA
+
+```{r}
+library(ggplot2)
+pca<- prcomp(t(dea_logcpm))
+#plot(pca$x[,1],pca$x[,2])
+pca.var<-pca$sdev^2
+pca.var.per <- round(pca.var/sum(pca.var)*100,1)
+#barplot(pca.var.per,main="Scree Plot",xlab="Principal Component",ylab="Percent Variation")
+
+pca.data<- data.frame(Sample=rownames(pca$x),  X = pca$x[,1], Y = pca$x[,2])
+
+ggplot(data=pca.data,aes(x=X,y=Y,label=Sample))+
+  geom_text()+
+  geom_point()+
+  xlab(paste("PC1 - ",pca.var.per[1],"%",sep=""))+
+  ylab(paste("PC2 - ",pca.var.per[2],"%",sep=""))+
+  theme_bw()+
+  ggtitle("PCA of JuJu Total RNA")
+```
+
+
+
+```{r}
+# Normalization and box plot to determine distribution
+par(mfrow = c(1,2))
+boxplot(as.data.frame(dea_logcpm), 
+        las=2, 
+        col=as.numeric(dea$samples$group), 
+        main = "Non-normalized Data")
+boxplot(as.data.frame(dea_logcpm), 
+        las=2, 
+        col=as.numeric(dea$samples$group), 
+        main = "Normalized Data ")
+
+```
+
+```{r}
+# Cell PlotMDS
+library(tidyverse)
+library(variancePartition)
+library(edgeR)
+library(limma)
+library(RColorBrewer)
+library(readxl)
+library(pheatmap)
+par(mfrow = c(1,2))
+plotMDS(dea_logcpm, 
+        main = "Dimensions 1 & 2", 
+        col = as.numeric(dea$samples$group))
+plotMDS(dea_logcpm, 
+        main = "Dimensions 3 & 4", 
+        col = as.numeric(dea$samples$group), 
+        dim.plot = c(3,4))
+# Density plot to assess distribution after Filtering
+L <- mean(fullDF$samples$lib.size) * 1e-6
+M <- median(fullDF$samples$lib.size) * 1e-6
+query <- as.data.frame(dea_logcpm) %>% 
+     pivot_longer(everything(), names_to = "Sample", values_to = "logCPM")
+ggplot(query, aes(x = logCPM, fill = Sample)) +
+                geom_density(
+                        adjust = 1.5,
+                        alpha = 0.4
+                ) +
+                scale_x_continuous(
+                        limits = c(-5,24,2),
+                        expand = c(0,0),
+                        breaks = seq(-5,24,5)
+                ) +
+                scale_y_continuous(
+                        expand = c(0,0)
+                ) +
+                scale_fill_discrete(
+                        breaks = factor(query$Sample)
+                ) +
+                xlim(-5,24) +
+                labs(
+                        x = "log-CPM",
+                        y = "Density",
+                        title = "Merged RNA Density Distribution"
+                ) +
+                geom_vline(
+                     xintercept = log2(10/M + 2/L)
+                ) +
+                theme(
+                        axis.title.x = element_text(margin = margin(10,0,0,0), face = "bold", size = 9),
+                        axis.title.y = element_text(margin = margin(10,10,0,0), face = "bold", size = 9),
+                        plot.title = element_text(face = "bold", hjust = 0.5, size = 12),
+                        panel.background = element_blank(),
+                        panel.grid = element_line(color = "gray90"),
+                        panel.grid.major = element_line(color = "gray95"),
+                        panel.grid.minor = element_blank()
+                )
+                
+
+```
+```{r}
+plotpca <- function(df, seq, color, fn, p){ 
+  # df = data.frame that acts as the input for the function.
+  # seq = sequencing info housing the categories that each sample belongs to.
+  # color = colors to be used for PCA plot.
+  # fn = filename used for savin the plot.
+  # p = path for the file.
+  pca_rna <- prcomp(t(df), scale = TRUE, center = TRUE)
+  per_var <- 100*(pca_rna$sdev^2/sum(pca_rna$sdev^2))
+  d <- data.frame("PC1" = pca_rna$x[,1],
+                  "PC2" = pca_rna$x[,2],
+                  "PC3" = pca_rna$x[,3],
+                  "PC4" = pca_rna$x[,4],
+                  "Sheep" = factor(seq$Sheep),
+                  "Source" = seq$Type)
+  g <- ggplot(d, aes(x = PC1, y = PC2)) +
+          geom_point(aes(color = Sheep,
+                         shape = Source),
+                     size = 5.5,
+                     stroke = 0.8
+          ) +
+          scale_shape_manual(values = c(15, 17)
+          ) +
+          scale_color_manual(values = color
+          ) +
+          labs(
+            x = paste0("PC1, VarExp: ", round(per_var[[1]], 1), "%"),
+            y = paste0("PC2, VarExp: ", round(per_var[[2]], 1), "%"),
+            color = guide_legend(title = "Recovery Stage", size = 18)
+          ) +
+          theme(
+            panel.background = element_blank(),
+            panel.grid.minor = element_blank(),
+            panel.grid.major = element_blank(),
+            text = element_text(size = 18),
+            axis.text.x = element_text(size = 16),
+            axis.text.y = element_text(size = 16),
+            panel.grid = element_line(color = "gray0", linetype = "solid"),
+            legend.key = element_blank(),
+            legend.text = element_text(size = 16),
+            legend.title = element_text(face = "italic")
+          ) +
+          guides(
+            shape = guide_legend(override.aes = list(size = 4)), # Making legend shapes smaller
+            color = guide_legend(override.aes = list(size = 4)), # Making legend colors smaller
+          ) +
+          geom_hline(aes(yintercept = 0), 
+                     color = "gray0") +
+          geom_vline(aes(xintercept = 0),
+                     color = "gray0")
+  ggsave(paste0(fn, "PC1_vs_PC2.tiff"), plot = g, device = "tiff", path = p)
+}
+
+# PCA Plot
+#plotpca(dea_logcpm, seqinfo, color = c("#ec696f", "#53dbf3"), fn = "Justin_vs_Julian_PCA", p = "./")
+# Eigenvalue Plotting
+pca_rna <- prcomp(t(dea_logcpm), scale = TRUE, center = TRUE)
+per_var <- 100*(pca_rna$sdev^2/sum(pca_rna$sdev^2))
+eigenv <- data.frame(Dimension = as.factor(1:dim(pca_rna$x)[[2]]),
+                     Eigenvalue = per_var,
+                     Percentage = round(per_var, digits = 1))
+
+scree <- ggplot(data = eigenv, aes(x = Dimension, y = Percentage)) +
+  geom_bar(stat = 'identity',
+           colour = "#037bfc",
+           fill = "#037bfc") +
+  labs(x = "Principal Component", 
+       y = "Percentage Variance Explained") +
+  stat_summary(
+    fun.data = stat_bar_data,
+    geom = "text",
+    hjust = 0.4,
+    vjust = 1,
+    size = 3
+  ) +
+  scale_y_continuous(expand = c(0,0))+
+  theme(
+          plot.title = element_text(face = "bold", hjust = 0.5, margin =   margin(0,0,10,0)),
+          panel.grid = element_line(color = "gray95"),
+          panel.grid.minor = element_blank(),
+          panel.border = element_blank(),
+          axis.title.y = element_text(margin = margin(0,10,0,0), size = 16),
+          axis.title.x = element_text(margin = margin(10,0,0,0), size = 16),
+          axis.text.x = element_text(face = "bold", size = 12),
+          axis.text.y = element_text(face = "bold", size = 12),
+          legend.title = element_text(face = "bold", hjust = 0.5, size = 10),
+          panel.background = element_blank(),
+          legend.key = element_blank())
+ggsave(paste0("Scree_Plot_Revised.tiff"), plot = scree, device = "tiff", path = "./")
+```
+
+```
+# Ignore Below
+```{r}
+loadingscores<-pca$rotation[,1]
+gene_scores<-abs(loadingscores)
+gene_score_ranked<-sort(gene_scores,decreasing=TRUE)
+
+top_10_genes<-names(gene_score_ranked[1:10])
+
+top_10_genes
+```
+
+```{r}
+pca<- prcomp(t(cleanEVDF))
+#plot(pca$x[,1],pca$x[,2])
+pca.var<-pca$sdev^2
+pca.var.per <- round(pca.var/sum(pca.var)*100,1)
+#barplot(pca.var.per,main="Scree Plot",xlab="Principal Component",ylab="Percent Variation")
+
+pca.data<- data.frame(Sample=rownames(pca$x),  X = pca$x[,1], Y = pca$x[,2])
+
+ggplot(data=pca.data,aes(x=X,y=Y,label=Sample))+
+  geom_text()+
+  xlab(paste("PC1 - ",pca.var.per[1],"%",sep=""))+
+  ylab(paste("PC2 - ",pca.var.per[2],"%",sep=""))+
+  theme_bw()+
+  ggtitle("PCA of JuJu Total RNA EV")
+```
