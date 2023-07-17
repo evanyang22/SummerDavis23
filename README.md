@@ -1,5 +1,7 @@
 # SummerDavis23
 
+Link to extensive documentation : https://tutormd.notion.site/Aligners-Documentation-e4fee84eba2448fa9df00fd82dd48e9a 
+
 ## miRNA alignment using miRDeep2
 Functions of mirDeep2 (https://github.com/rajewsky-lab/mirdeep2)
 1. Mapper.pl : processes reads and maps them to reference genome, is a pre-requisite for miRDeep2.pl and quantifier.pl
