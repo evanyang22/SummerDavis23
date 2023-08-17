@@ -1,5 +1,7 @@
 # SummerDavis23
 
+For questions: email evan.yang@emory.edu
+
 Link to extensive documentation : https://tutormd.notion.site/Aligners-Documentation-e4fee84eba2448fa9df00fd82dd48e9a 
 
 ## miRNA alignment using miRDeep2
