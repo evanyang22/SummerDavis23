@@ -1,0 +1,1260 @@
+---
+title: "JuJu miRNA"
+author: "Felipe Takaesu"
+date: "2023-06-26"
+output:
+  html_document: default
+  pdf_document: default
+---
+
+# Set-up
+You will need to install the following libraries if you do not have them:
+
+- tidyverse
+- variancePartition
+- edgeR
+- limma
+- RColorBrewer
+- readxl
+- pheatmap
+- stringdist
+- data.table
+- statmod
+
+In this code chunk, we define the following functions:
+
+- **compare_sequences**
+
+The compare_sequences function is used to conglomerate consensus mature miRNA sequences that 
+are closely similar and are possibly the same miRNA. The function uses the Levenshtein Distance Equation from the stringdistmatrix function to calculate the similarity between strings.
+
+- More information on the Levenshtein Distance Equation can be read here: [https://en.wikipedia.org/wiki/Levenshtein_distance]
+- Or for an easier way to follow: [https://medium.com/@ethannam/understanding-the-levenshtein-distance-equation-for-beginners-c4285a5604f0]
+- **Am also considering using the Smith-Waterman algorithm instead.**
+
+```{r setup, include=FALSE}
+library(tidyverse)
+library(variancePartition)
+library(edgeR)
+library(limma)
+library(RColorBrewer)
+library(readxl)
+library(pheatmap)
+library(stringdist)
+library(data.table)
+library(statmod)
+
+# Function used to compare similarities between consensus mature sequences
+compare_sequences <- function(df, similarity_threshold) {
+  sequence_similarity <- stringdistmatrix(df$`consensus mature sequence`, 
+                                          df$`consensus mature sequence`, 
+                                          method = "lv") 
+  sequence_similarity[upper.tri(sequence_similarity, diag = TRUE)] <- NA
+  similarity_groups <- cumsum(apply(sequence_similarity, 1, function(x) {
+    all(is.na(x) | x > similarity_threshold)
+  }))
+  df$novel_id <- similarity_groups
+  return(df)
+}
+
+# PCA plotting function
+plotpca <- function(df, seq, color, fn, p){ 
+  # df = data.frame that acts as the input for the function.
+  # seq = sequencing info housing the categories that each sample belongs to.
+  # color = colors to be used for PCA plot.
+  # fn = filename used for savin the plot.
+  # p = path for the file.
+  pca_rna <- prcomp(t(df), scale = TRUE, center = TRUE)
+  per_var <- 100*(pca_rna$sdev^2/sum(pca_rna$sdev^2))
+  d <- data.frame("PC1" = pca_rna$x[,1],
+                  "PC2" = pca_rna$x[,2],
+                  "PC3" = pca_rna$x[,3],
+                  "PC4" = pca_rna$x[,4],
+                  "Sheep" = seq$Sheep,
+                  "Source" = seq$Source,
+                  "Time" = seq$Time)
+  g <- ggplot(d, aes(x = PC1, y = PC2)) +
+          geom_point(aes(color = Sheep,
+                         size = Source,
+                         shape = Time),
+                     stroke = 0.8
+          ) +
+          scale_shape_manual(values = c(15, 17, 19, 18)
+          ) +
+          scale_color_manual(values = color
+          ) +
+          scale_size_manual(values = c(4.5, 7)
+          ) +
+          labs(
+            x = paste0("PC1, VarExp: ", round(per_var[[1]], 1), "%"),
+            y = paste0("PC2, VarExp: ", round(per_var[[2]], 1), "%"),
+            color = guide_legend(title = "Sheep", size = 18)
+          ) +
+          theme(
+            panel.background = element_blank(),
+            panel.grid.minor = element_blank(),
+            panel.grid.major = element_blank(),
+            text = element_text(size = 18),
+            axis.text.x = element_text(size = 16),
+            axis.text.y = element_text(size = 16),
+            panel.grid = element_line(color = "gray0", linetype = "solid"),
+            legend.key = element_blank(),
+            legend.text = element_text(size = 16),
+            legend.title = element_text(face = "italic")
+          ) +
+          guides(
+            shape = guide_legend(override.aes = list(size = 4)), # Making legend shapes smaller
+            color = guide_legend(override.aes = list(size = 4))  # Making legend colors smaller
+          ) +
+          geom_hline(aes(yintercept = 0), 
+                     color = "gray0") +
+          geom_vline(aes(xintercept = 0),
+                     color = "gray0")
+  ggsave(paste0(fn, "PC1_vs_PC2.tiff"), plot = g, device = "tiff", path = p)
+}
+
+stat_bar_data <- function(y){
+     data.frame(
+          y = y + 1.05,
+          label = paste(as.character(y), "%", sep = "")
+     )
+}
+```
+
+# Data Tidying
+
+## Serum
+
+This code chunk makes separate data frames for known miRNAs and novel miRNAs. Novel miRNAs selection was based on the following:
+
+- a significant randfold p-value of **yes**
+- a miRDeep2 score > 1
+
+Provisional IDs were not considered as they were often convoluting identical mature novel miRNAs together. 
+
+Novel miRNAs with identical consensus mature sequences were summed together to preserve the poisson distribution from raw counts. This was followed with the compare_sequences function to sum up additional consensus mature sequences that are closely similar (similarity was determined as having an integer value less than or equal to 1)
+
+In theory, the compare_sequences function can do the same thing as the summing identical consensus mature sequences, but it is computationally more intensive. Separating them out lessens the burden. 
+
+
+```{r serum, warning = FALSE, message = FALSE}
+# Setting path to directory with all serum data.
+p <- "C:\\Users\\EHYANG4\\Desktop\\8_23_23_Dog\\DogOutput\\DogOutput\\"
+fil <- list.files(path = p, pattern = "\\.csv$", recursive = TRUE)
+
+# Known miRNAs selection
+fil_mature <- fil[grep("miRNAs_expressed", fil)] 
+mature_name <- sapply(strsplit(fil_mature, "/"), '[', 1)
+pre_mature <- map(fil_mature, ~ read_table(file = paste0(p, .x)))
+new_list <- map2(pre_mature, mature_name, ~ select(.x, 1:2) %>% rename(!! .y := 2))
+serum_mature <- reduce(new_list, full_join, by = "#miRNA") %>% 
+  group_by(`#miRNA`) %>% 
+  summarize(across(mature_name, sum, na.rm = TRUE)) %>% #this is the line that is giving us an error
+  rename(`miRNA` = `#miRNA`)
+
+# Novel miRNAs selection
+fil_novel <- fil[grep("result_", fil)]
+novel_name <- sapply(strsplit(fil_novel, "/"), '[', 1)
+pre_novel <- map(fil_novel, ~ fread(file = paste0(p, .x), select = c("total read count", "consensus mature sequence", "significant randfold p-value", "miRDeep2 score"), skip = 26)) %>% 
+  map(~ filter(.x, `significant randfold p-value` == "yes" & `miRDeep2 score` > 1)) %>% 
+  map(~ select(.x, c(`consensus mature sequence`, `total read count`))) %>% 
+  map2(novel_name, ~ rename(.x, !!.y := "total read count"))
+
+serum_novel_combined <- reduce(pre_novel, full_join, by = "consensus mature sequence") %>% 
+  group_by(`consensus mature sequence`) %>% 
+  summarize(across(novel_name, sum, na.rm = TRUE))
+
+# Combining sequences that are one integer apart.
+serum_novel <- compare_sequences(serum_novel_combined, 1) %>% 
+  group_by(novel_id) %>% 
+  summarize(`consensus mature sequence` = first(`consensus mature sequence`),
+            across(novel_name, sum, na.rm = TRUE))
+```
+
+```{r}
+serum_matureEY<- serum_mature[,-1]
+row.names(serum_matureEY)<-serum_mature[[1]]
+
+```
+```{r}
+serum_novelEY<- serum_novel_combined[,-1]
+row.names(serum_novelEY)<- serum_novel_combined[[1]]
+```
+
+```{r}
+serum_total<- rbind(serum_novelEY,serum_matureEY)
+```
+
+
+## Evan Edits
+
+```{r}
+seqInfo_EY<-read_excel("./seqInfo.xlsx")
+plotpca <- function(df, seq, color, fn, p){ 
+  # df = data.frame that acts as the input for the function.
+  # seq = sequencing info housing the categories that each sample belongs to.
+  # color = colors to be used for PCA plot.
+  # fn = filename used for savin the plot.
+  # p = path for the file.
+  pca_rna <- prcomp(t(df), scale = TRUE, center = TRUE)
+  per_var <- 100*(pca_rna$sdev^2/sum(pca_rna$sdev^2))
+  d <- data.frame("PC1" = pca_rna$x[,1],
+                  "PC2" = pca_rna$x[,2],
+                  "PC3" = pca_rna$x[,3],
+                  "PC4" = pca_rna$x[,4])
+                  #"Type" = factor(seq$Label))
+  g <- ggplot(d, aes(x = PC1, y = PC2)) +
+          geom_point(aes(color = seq$Label),
+                     stroke = 0.8
+          ) +
+          scale_shape_manual(values = c(15, 17)
+          ) +
+          scale_color_manual(values = color
+          ) +
+          labs(
+            x = paste0("PC1, VarExp: ", round(per_var[[1]], 1), "%"),
+            y = paste0("PC2, VarExp: ", round(per_var[[2]], 1), "%"),
+            color = guide_legend(title = "Type", size = 18)
+          ) +
+          theme(
+            panel.background = element_blank(),
+            panel.grid.minor = element_blank(),
+            panel.grid.major = element_blank(),
+            text = element_text(size = 18),
+            axis.text.x = element_text(size = 16),
+            axis.text.y = element_text(size = 16),
+            panel.grid = element_line(color = "gray0", linetype = "solid"),
+            legend.key = element_blank(),
+            legend.text = element_text(size = 16),
+            legend.title = element_text(face = "italic")
+          ) +
+          guides(
+            shape = guide_legend(override.aes = list(size = 4)), # Making legend shapes smaller
+            color = guide_legend(override.aes = list(size = 4)), # Making legend colors smaller
+          ) +
+          geom_hline(aes(yintercept = 0), 
+                     color = "gray0") +
+          geom_vline(aes(xintercept = 0),
+                     color = "gray0")
+  ggsave(paste0(fn, "PC1_vs_PC2.tiff"), plot = g, device = "tiff", path = p)
+}
+```
+
+```{r}
+
+#c_dea <- DGEList(counts = serum_matureEY, group = seqInfo_EY$Sample) 
+c_dea <- DGEList(counts = serum_total) 
+#rownames(c_dea)<-serum_mature[,1]
+keep_c <- filterByExpr(c_dea)
+c_dea <- c_dea[keep_c, ,keep.lib.sizes = FALSE]
+c_test <- cpm(c_dea, log = T)
+c_dea <- calcNormFactors(c_dea, method = "TMM") # Normalization
+c_dea_logcpm <- cpm(c_dea, log = T)
+
+
+plotpca(c_dea_logcpm, seqInfo_EY, color = c("#ec696f", "#53dbf3"), fn = "DogPCA2", p = "./Runs9_12")
+
+```
+
+```{r}
+# Heatmap
+## Calculating genes with high variance
+## Since there are so little miRNAs, I am selecting 50% of the miRNAs with the highest variance.
+var_genes <- apply(c_dea_logcpm, 1, var)
+select_var <- names(sort(var_genes, decreasing = TRUE))[1:(0.5 *length(var_genes))]
+hvlcpm <- c_dea_logcpm[select_var,]
+## Annotating heatmap
+annot_row = data.frame(Control = seqInfo_EY$Label,
+                       Type = seqInfo_EY$Label2)
+rownames(annot_row) = colnames(hvlcpm)
+annotation_colors <- list(Control = c(Ctrl = "#F26157", HF = "#FFB100"),
+                          Type = c(CS = "#9552EE", AO = "#7be692"))
+
+tiff(filename = "./DogHeatMapCombined.tiff", width = 1080, height = 1080)
+
+pheatmap(hvlcpm,
+         cluster_rows = TRUE,
+         cluster_cols = TRUE,
+         clustering_distance_cols = "euclidean",
+         show_colnames = FALSE,
+         show_rownames = TRUE,
+         clustering_method = "ward.D2",
+         border_color = "gray50",
+         scale = "row",
+         annotation_col = annot_row,
+         annotation_colors = annotation_colors,
+         tree_height_row = 30,
+         tree_height_col = 30,
+         fontsize = 18,
+         fontsize_row = 18,
+         cellwidth = 30,
+         cellheight = 30,
+         col = colorRampPalette(c("#32009F", "white", "firebrick3"))(100))
+
+dev.off()
+
+```
+```{r}
+library("writexl")
+write_xlsx(serum_mature,"./knownDogMiRNA.xlsx")
+
+```
+
+
+### Subsetting into CS and AO
+```{r}
+combinedCS<- serum_total[,c(1,4,7,8,11,12)]
+combinedAO<- serum_total[,-c(1,4,7,8,11,12)]
+row.names(combinedCS)<-row.names(serum_total)
+row.names(combinedAO)<-row.names(serum_total)
+
+seqInfoCS<-seqInfo_EY[c(1,4,7,8,11,12),]
+seqInfoAO<-seqInfo_EY[-c(1,4,7,8,11,12),]
+
+
+```
+### AO
+```{r}
+#c_dea <- DGEList(counts = serum_matureEY, group = seqInfo_EY$Sample) 
+c_deaAO <- DGEList(counts = combinedAO) 
+#rownames(c_dea)<-serum_mature[,1]
+keep_cAO <- filterByExpr(c_deaAO)
+c_deaAO <- c_deaAO[keep_cAO, ,keep.lib.sizes = FALSE]
+c_testAO <- cpm(c_deaAO, log = T)
+c_deaAO <- calcNormFactors(c_deaAO, method = "TMM") # Normalization
+c_dea_logcpmAO <- cpm(c_deaAO, log = T)
+
+plotpca(c_dea_logcpmAO, seqInfoAO, color = c("#ec696f", "#53dbf3"), fn = "DogPCAAO", p = "./Runs9_14")
+
+#heatmap
+
+var_genesAO <- apply(c_dea_logcpmAO, 1, var)
+select_varAO <- names(sort(var_genesAO, decreasing = TRUE))[1:(0.5*length(var_genesAO))]
+hvlcpmAO <- c_dea_logcpmAO[select_varAO,]
+## Annotating heatmap
+annot_rowAO = data.frame(Control = seqInfoAO$Label)
+rownames(annot_rowAO) = colnames(hvlcpmAO)
+annotation_colorsAO <- list(Control = c(Ctrl = "#F26157", HF = "#FFB100"))
+
+tiff(filename = "./DogHeatMapCombinedAO.tiff", width = 1080, height = 1080)
+
+pheatmap(hvlcpmAO,
+         cluster_rows = TRUE,
+         cluster_cols = TRUE,
+         clustering_distance_cols = "euclidean",
+         show_colnames = FALSE,
+         show_rownames = TRUE,
+         clustering_method = "ward.D2",
+         border_color = "gray50",
+         scale = "row",
+         annotation_col = annot_rowAO,
+         annotation_colors = annotation_colorsAO,
+         tree_height_row = 30,
+         tree_height_col = 30,
+         fontsize = 18,
+         fontsize_row = 18,
+         cellwidth = 30,
+         cellheight = 30,
+         col = colorRampPalette(c("#32009F", "white", "firebrick3"))(100))
+```
+
+### CS
+
+```{r}
+#c_dea <- DGEList(counts = serum_matureEY, group = seqInfo_EY$Sample) 
+c_deaCS <- DGEList(counts = combinedCS) 
+#rownames(c_dea)<-serum_mature[,1]
+keep_cCS <- filterByExpr(c_deaCS)
+c_deaCS <- c_deaCS[keep_cCS, ,keep.lib.sizes = FALSE]
+c_testCS <- cpm(c_deaCS, log = T)
+c_deaCS <- calcNormFactors(c_deaCS, method = "TMM") # Normalization
+c_dea_logcpmCS <- cpm(c_deaCS, log = T)
+
+plotpca(c_dea_logcpmCS, seqInfoCS, color = c("#ec696f", "#53dbf3"), fn = "DogPCACS", p = "./Runs9_14")
+
+#heatmap
+
+var_genesCS <- apply(c_dea_logcpmCS, 1, var)
+select_varCS <- names(sort(var_genesCS, decreasing = TRUE))[1:(0.5*length(var_genesCS))]
+hvlcpmCS <- c_dea_logcpmCS[select_varCS,]
+## Annotating heatmap
+annot_rowCS = data.frame(Control = seqInfoCS$Label)
+rownames(annot_rowCS) = colnames(hvlcpmCS)
+annotation_colorsCS <- list(Control = c(Ctrl = "#F26157", HF = "#FFB100"))
+
+tiff(filename = "./DogHeatMapCombinedCS.tiff", width = 1080, height = 1080)
+
+pheatmap(hvlcpmCS,
+         cluster_rows = TRUE,
+         cluster_cols = TRUE,
+         clustering_distance_cols = "euclidean",
+         show_colnames = FALSE,
+         show_rownames = TRUE,
+         clustering_method = "ward.D2",
+         border_color = "gray50",
+         scale = "row",
+         annotation_col = annot_rowCS,
+         annotation_colors = annotation_colorsCS,
+         tree_height_row = 30,
+         tree_height_col = 30,
+         fontsize = 18,
+         fontsize_row = 18,
+         cellwidth = 30,
+         cellheight = 30,
+         col = colorRampPalette(c("#32009F", "white", "firebrick3"))(100))
+```
+
+### Differential Gene Expression Analysis using limma/voom workflow
+https://ucdavis-bioinformatics-training.github.io/2018-June-RNA-Seq-Workshop/thursday/DE.html#:~:text=limma%20is%20an%20R%20package,analyses%20of%20RNA%2DSeq%20data. 
+
+#### Aorta Tissue
+
+```{r}
+AODGE<-DGEList(combinedAO)
+AODGE<-calcNormFactors(AODGE)
+AODGE$samples$group<-seqInfoAO$Label
+```
+
+```{r}
+#filtering lowly expressed
+cutoff <- 1
+dropAO <- which(apply(cpm(AODGE), 1, max) < cutoff)
+AOFinal <- AODGE[-dropAO,] 
+dim(AOFinal)
+
+#Filter by express
+keep.exprs <- filterByExpr(AODGE,group=AODGE$samples$group)
+AOFinal <- AODGE[keep.exprs,, keep.lib.sizes=FALSE]
+dim(AOFinal)
+```
+
+```{r}
+L <- mean(AOFinal$samples$lib.size) * 1e-6
+M <- median(AOFinal$samples$lib.size) * 1e-6
+c(L, M)
+
+cpm <- cpm(AOFinal)
+lcpm <- cpm(AOFinal, log=TRUE)
+
+samplenames <- colnames(AOFinal)
+
+lcpm.cutoff <- log2(10/M + 2/L)
+library(RColorBrewer)
+nsamples <- ncol(AOFinal)
+col <- brewer.pal(nsamples, "Paired")
+par(mfrow=c(1,2))
+plot(density(lcpm[,1]), col=col[1], lwd=2, ylim=c(0,0.26), las=2, main="", xlab="")
+title(main="A. Raw data", xlab="Log-cpm")
+abline(v=lcpm.cutoff, lty=3)
+for (i in 2:nsamples){
+den <- density(lcpm[,i])
+lines(den$x, den$y, col=col[i], lwd=2)
+}
+legend("topright", samplenames, text.col=col, bty="n")
+lcpm <- cpm(AOFinal, log=TRUE)
+plot(density(lcpm[,1]), col=col[1], lwd=2, ylim=c(0,0.26), las=2, main="", xlab="")
+title(main="B. Filtered data", xlab="Log-cpm")
+abline(v=lcpm.cutoff, lty=3)
+for (i in 2:nsamples){
+den <- density(lcpm[,i])
+lines(den$x, den$y, col=col[i], lwd=2)
+}
+legend("topright", samplenames, text.col=col, bty="n")
+```
+```{r}
+AOFinal <- calcNormFactors(AOFinal, method = "TMM")
+AOFinal$samples$norm.factors
+
+AOFinal2 <- AOFinal
+AOFinal2$samples$norm.factors <- 1
+AOFinal2$counts[,1] <- ceiling(AOFinal2$counts[,1]*0.05)
+AOFinal2$counts[,2] <- AOFinal2$counts[,2]*5
+
+par(mfrow=c(1,2))
+lcpm <- cpm(AOFinal2, log=TRUE)
+boxplot(lcpm, las=2, col=col, main="")
+title(main="A. Example: Unnormalised data",ylab="Log-cpm")
+AOFinal2 <- calcNormFactors(AOFinal2)  
+AOFinal2$samples$norm.factors
+
+lcpm <- cpm(AOFinal2, log=TRUE)
+boxplot(lcpm, las=2, col=col, main="")
+title(main="B. Example: Normalised data",ylab="Log-cpm")
+```
+
+```{r}
+groupAO<-seqInfoAO$Label
+levels(groupAO)<-c("Ctrl","HF")
+groupAO
+```
+```{r}
+#plotMDS(AOFinal, col = as.numeric(seqInfoAO$Label))
+plotMDS(AOFinal, col = as.numeric(groupAO))
+
+```
+
+```{r}
+mmAO <- model.matrix(~0 + groupAO)
+yAO <- voom(AOFinal, mmAO, plot = T)
+```
+
+```{r}
+fitAO <- lmFit(yAO, mmAO)
+head(coef(fitAO))
+```
+
+```{r}
+contrAO <- makeContrasts(groupAOHF - groupAOCtrl, levels = colnames(coef(fitAO)))
+contrAO
+tmpAO <- contrasts.fit(fitAO, contrAO)
+tmpAO <- eBayes(tmpAO)
+top.tableAO <- topTable(tmpAO, sort.by = "P", n = Inf)
+head(top.tableAO, 20)
+```
+```{r}
+diffmethods<-topTable(tmpAO, sort.by = "P", n = Inf,adjust.method ="fdr")
+view(diffmethods)
+```
+None of these methods give better results
+
+####  Coronary SInus
+
+```{r}
+CSDGE<-DGEList(combinedCS)
+CSDGE<-calcNormFactors(CSDGE)
+CSDGE$samples$group<-seqInfoCS$Label
+```
+
+```{r}
+#filtering lowly expressed
+cutoff <- 1
+dropCS <- which(apply(cpm(CSDGE), 1, max) < cutoff)
+CSFinal <- CSDGE[-dropCS,] 
+dim(CSFinal)
+
+#Filter by express
+keep.exprs <- filterByExpr(CSDGE,group=CSDGE$samples$group)
+CSFinal <- CSDGE[keep.exprs,, keep.lib.sizes=FALSE]
+dim(CSFinal)
+```
+
+```{r}
+L <- mean(CSFinal$samples$lib.size) * 1e-6
+M <- median(CSFinal$samples$lib.size) * 1e-6
+c(L, M)
+
+cpm <- cpm(CSFinal)
+lcpm <- cpm(CSFinal, log=TRUE)
+
+samplenames <- colnames(CSFinal)
+
+lcpm.cutoff <- log2(10/M + 2/L)
+library(RColorBrewer)
+nsamples <- ncol(CSFinal)
+col <- brewer.pal(nsamples, "Paired")
+par(mfrow=c(1,2))
+plot(density(lcpm[,1]), col=col[1], lwd=2, ylim=c(0,0.26), las=2, main="", xlab="")
+title(main="A. Raw data", xlab="Log-cpm")
+abline(v=lcpm.cutoff, lty=3)
+for (i in 2:nsamples){
+den <- density(lcpm[,i])
+lines(den$x, den$y, col=col[i], lwd=2)
+}
+legend("topright", samplenames, text.col=col, bty="n")
+lcpm <- cpm(CSFinal, log=TRUE)
+plot(density(lcpm[,1]), col=col[1], lwd=2, ylim=c(0,0.26), las=2, main="", xlab="")
+title(main="B. Filtered data", xlab="Log-cpm")
+abline(v=lcpm.cutoff, lty=3)
+for (i in 2:nsamples){
+den <- density(lcpm[,i])
+lines(den$x, den$y, col=col[i], lwd=2)
+}
+legend("topright", samplenames, text.col=col, bty="n")
+```
+```{r}
+CSFinal <- calcNormFactors(CSFinal, method = "TMM")
+CSFinal$samples$norm.factors
+
+CSFinal2 <- CSFinal
+CSFinal2$samples$norm.factors <- 1
+CSFinal2$counts[,1] <- ceiling(CSFinal2$counts[,1]*0.05)
+CSFinal2$counts[,2] <- CSFinal2$counts[,2]*5
+
+par(mfrow=c(1,2))
+lcpm <- cpm(CSFinal2, log=TRUE)
+boxplot(lcpm, las=2, col=col, main="")
+title(main="A. Example: Unnormalised data",ylab="Log-cpm")
+CSFinal2 <- calcNormFactors(CSFinal2)  
+CSFinal2$samples$norm.factors
+
+lcpm <- cpm(CSFinal2, log=TRUE)
+boxplot(lcpm, las=2, col=col, main="")
+title(main="B. Example: Normalised data",ylab="Log-cpm")
+```
+
+```{r}
+groupCS<-seqInfoCS$Label
+levels(groupCS)<-c("Ctrl","HF")
+groupCS
+```
+```{r}
+#plotMDS(CSFinal, col = as.numeric(seqInfoCS$Label))
+plotMDS(CSFinal, col = as.numeric(groupCS))
+
+```
+
+```{r}
+mmCS <- model.matrix(~0 + groupCS)
+yCS <- voom(CSFinal, mmCS, plot = T)
+```
+
+```{r}
+fitCS <- lmFit(yCS, mmCS)
+head(coef(fitCS))
+```
+
+```{r}
+contrCS <- makeContrasts(groupCSHF - groupCSCtrl, levels = colnames(coef(fitCS)))
+contrCS
+tmpCS <- contrasts.fit(fitCS, contrCS)
+tmpCS <- eBayes(tmpCS)
+top.tableCS <- topTable(tmpCS, sort.by = "P", n = Inf)
+head(top.tableCS, 20)
+```
+```{r}
+#Exporting top tables
+library(xlsx)
+write.xlsx(top.tableAO, "./TopTableAO.xlsx", sheetName="Sheet1",
+           col.names=TRUE, row.names=TRUE, append=FALSE)
+
+write.xlsx(top.tableCS, "./TopTableCS.xlsx", sheetName="Sheet1",
+           col.names=TRUE, row.names=TRUE, append=FALSE)
+```
+
+### Power Analysis
+
+```{r}
+library(pwr)
+pwr.2p.test(n=3,sig.level=0.05,power=0.75)
+
+```
+
+
+
+
+
+#### Cut off
+#### Coronary Sinus bad method below
+
+
+
+```{r}
+CSDGE<-DGEList(combinedCS)
+CSDGE<-calcNormFactors(CSDGE)
+#filtering lowly expressed
+cutoff <- 1
+dropCS <- which(apply(cpm(CSDGE), 1, max) < cutoff)
+CSFinal <- CSDGE[-dropCS,] 
+dim(CSFinal)
+```
+
+```{r}
+groupCS<-seqInfoCS$Label
+levels(groupCS)<-c("Ctrl","HF")
+groupCS
+```
+```{r}
+#plotMDS(CSFinal, col = as.numeric(seqInfoCS$Label))
+plotMDS(CSFinal, col = as.numeric(groupCS))
+
+```
+
+```{r}
+mmCS <- model.matrix(~0 + groupCS)
+yCS <- voom(CSFinal, mmCS, plot = T)
+```
+
+```{r}
+fitCS <- lmFit(yCS, mmCS)
+head(coef(fitCS))
+```
+
+```{r}
+contrCS <- makeContrasts(groupCSHF - groupCSCtrl, levels = colnames(coef(fitCS)))
+contrCS
+tmpCS <- contrasts.fit(fitCS, contrCS)
+tmpCS <- eBayes(tmpCS)
+top.tableCS <- topTable(tmpCS, sort.by = "P", n = Inf)
+head(top.tableCS, 20)
+```
+
+
+
+### Preparing for Volcano Plot Analysis with Dream
+This is not a repeated measures experimental design so likely ignore this section
+#### Aorta tissue (AO)
+
+```{r}
+#use seqInfoAO
+
+#use c_dea_logcpm_AO
+
+OperationAO<-factor(seqInfoAO$Label, levels = c('Ctrl', 'HF')) #setting "Ctrl" as reference level
+
+designAO<-model.matrix(~ OperationAO)
+
+
+form <- ~ Label #expression is influenced by operation
+#form <- ~ OperationAO
+
+param <- SnowParam(4, "SOCK", progressbar = TRUE)
+
+#removing rows that give us NAs
+removeRowsAO<-c("cfa-miR-30d","cfa-miR-361")
+c_dea_logcpmAO<- c_dea_logcpmAO[!(row.names(c_dea_logcpmAO) %in% removeRowsAO),]
+#note: after running VoomwithDreamWeights, 2 rows give us an NA, and this is the solution I feel the most comfortable with. Other methods to solve include data imputation, but I am not experienced enough with that and do not want do something statistically inaccurate so we are just going to remove the rows beforehand.
+
+vobjDreamAO <- voomWithDreamWeights(c_dea_logcpmAO, form, seqInfoAO, BPPARAM = param)
+fitmmAO <- dream(vobjDreamAO, form, seqInfoAO)
+fitmmAO <- eBayes(fitmmAO)
+
+finalAO <- topTable(fitmmAO, coef = 2, sort.by = "logFC", number = Inf) %>%
+     mutate(log10P = -log10(adj.P.Val), .after = adj.P.Val)
+
+
+```
+
+
+#### CS 
+```{r}
+OperationCS<-factor(seqInfoCS$Label, levels = c('Ctrl', 'HF')) #setting "Ctrl" as reference level
+
+designCS<-model.matrix(~ OperationCS)
+
+
+form <- ~ Label #expression is influenced by operation
+#form <- ~ OperationCS
+
+param <- SnowParam(4, "SOCK", progressbar = TRUE)
+
+#removing rows that give us NAs
+removeRowsCS<-c("cfa-let-7c","cfa-miR-205","cfa-miR-20a","cfa-miR-1306")
+c_dea_logcpmCS<- c_dea_logcpmCS[!(row.names(c_dea_logcpmCS) %in% removeRowsCS),]
+#note: after running VoomwithDreamWeights, 2 rows give us an NA, and this is the solution I feel the most comfortable with. Other methods to solve include data imputation, but I am not experienced enough with that and do not want do something statistically inaccurate so we are just going to remove the rows beforehand.
+
+vobjDreamCS <- voomWithDreamWeights(c_dea_logcpmCS, form, seqInfoCS, BPPARAM = param)
+fitmmCS <- dream(vobjDreamCS, form, seqInfoCS)
+fitmmCS <- eBayes(fitmmCS)
+
+finalCS <- topTable(fitmmCS, coef = 2, sort.by = "logFC", number = Inf) %>%
+     mutate(log10P = -log10(adj.P.Val), .after = adj.P.Val)
+
+
+```
+
+#### End Cut OFF
+
+### Control Comparison in Coronary Sinus vs Aorta
+```{r}
+combinedCtrl<- serum_total[,c(1,2,5,8,9,12)]
+combinedHF<- serum_total[,-c(1,2,5,8,9,12)]
+
+seqInfoCtrl<-seqInfo_EY[c(1,2,5,8,9,12),]
+seqInfoHF<-seqInfo_EY[-c(1,2,5,8,9,12),]
+```
+
+```{r}
+CtrlDGE<-DGEList(combinedCtrl)
+CtrlDGE<-calcNormFactors(CtrlDGE)
+CtrlDGE$samples$group<-seqInfoCtrl$Label2
+```
+
+```{r}
+#filtering lowly expressed
+cutoff <- 1
+dropCtrl <- which(apply(cpm(CtrlDGE), 1, max) < cutoff)
+CtrlFinal <- CtrlDGE[-dropCtrl,] 
+dim(CtrlFinal)
+
+#Filter by express
+keep.exprs <- filterByExpr(CtrlDGE,group=CtrlDGE$samples$group)
+CtrlFinal <- CtrlDGE[keep.exprs,, keep.lib.sizes=FALSE]
+dim(CtrlFinal)
+```
+
+```{r}
+L <- mean(CtrlFinal$samples$lib.size) * 1e-6
+M <- median(CtrlFinal$samples$lib.size) * 1e-6
+c(L, M)
+
+cpm <- cpm(CtrlFinal)
+lcpm <- cpm(CtrlFinal, log=TRUE)
+
+samplenames <- colnames(CtrlFinal)
+
+lcpm.cutoff <- log2(10/M + 2/L)
+library(RColorBrewer)
+nsamples <- ncol(CtrlFinal)
+col <- brewer.pal(nsamples, "Paired")
+par(mfrow=c(1,2))
+plot(density(lcpm[,1]), col=col[1], lwd=2, ylim=c(0,0.26), las=2, main="", xlab="")
+title(main="A. Raw data", xlab="Log-cpm")
+abline(v=lcpm.cutoff, lty=3)
+for (i in 2:nsamples){
+den <- density(lcpm[,i])
+lines(den$x, den$y, col=col[i], lwd=2)
+}
+legend("topright", samplenames, text.col=col, bty="n")
+lcpm <- cpm(CtrlFinal, log=TRUE)
+plot(density(lcpm[,1]), col=col[1], lwd=2, ylim=c(0,0.26), las=2, main="", xlab="")
+title(main="B. Filtered data", xlab="Log-cpm")
+abline(v=lcpm.cutoff, lty=3)
+for (i in 2:nsamples){
+den <- density(lcpm[,i])
+lines(den$x, den$y, col=col[i], lwd=2)
+}
+legend("topright", samplenames, text.col=col, bty="n")
+```
+```{r}
+CtrlFinal <- calcNormFactors(CtrlFinal, method = "TMM")
+CtrlFinal$samples$norm.factors
+
+CtrlFinal2 <- CtrlFinal
+CtrlFinal2$samples$norm.factors <- 1
+CtrlFinal2$counts[,1] <- ceiling(CtrlFinal2$counts[,1]*0.05)
+CtrlFinal2$counts[,2] <- CtrlFinal2$counts[,2]*5
+
+par(mfrow=c(1,2))
+lcpm <- cpm(CtrlFinal2, log=TRUE)
+boxplot(lcpm, las=2, col=col, main="")
+title(main="A. Example: Unnormalised data",ylab="Log-cpm")
+CtrlFinal2 <- calcNormFactors(CtrlFinal2)  
+CtrlFinal2$samples$norm.factors
+
+lcpm <- cpm(CtrlFinal2, log=TRUE)
+boxplot(lcpm, las=2, col=col, main="")
+title(main="B. Example: Normalised data",ylab="Log-cpm")
+```
+
+```{r}
+groupCtrl<-seqInfoCtrl$Label2
+levels(groupCtrl)<-c("CS","AO")
+groupCtrl
+```
+```{r}
+#plotMDS(CtrlFinal, col = as.numeric(seqInfoCtrl$Label))
+plotMDS(CtrlFinal, col = as.numeric(groupCtrl))
+
+```
+
+```{r}
+mmCtrl <- model.matrix(~0 + groupCtrl)
+yCtrl <- voom(CtrlFinal, mmCtrl, plot = T)
+```
+
+```{r}
+fitCtrl <- lmFit(yCtrl, mmCtrl)
+head(coef(fitCtrl))
+```
+
+```{r}
+contrCtrl <- makeContrasts(groupCtrlAO - groupCtrlCS, levels = colnames(coef(fitCtrl)))
+contrCtrl
+tmpCtrl <- contrasts.fit(fitCtrl, contrCtrl)
+tmpCtrl <- eBayes(tmpCtrl)
+top.tableCtrl <- topTable(tmpCtrl, sort.by = "P", n = Inf)
+head(top.tableCtrl, 20)
+```
+#### Heart Failure Comparison of Coronary Sinus vs Aorta
+```{r}
+HFDGE<-DGEList(combinedHF)
+HFDGE<-calcNormFactors(HFDGE)
+HFDGE$samples$group<-seqInfoHF$Label2
+```
+
+```{r}
+#filtering lowly expressed
+cutoff <- 1
+dropHF <- which(apply(cpm(HFDGE), 1, max) < cutoff)
+HFFinal <- HFDGE[-dropHF,] 
+dim(HFFinal)
+
+#Filter by express
+keep.exprs <- filterByExpr(HFDGE,group=HFDGE$samples$group)
+HFFinal <- HFDGE[keep.exprs,, keep.lib.sizes=FALSE]
+dim(HFFinal)
+```
+
+```{r}
+L <- mean(HFFinal$samples$lib.size) * 1e-6
+M <- median(HFFinal$samples$lib.size) * 1e-6
+c(L, M)
+
+cpm <- cpm(HFFinal)
+lcpm <- cpm(HFFinal, log=TRUE)
+
+samplenames <- colnames(HFFinal)
+
+lcpm.cutoff <- log2(10/M + 2/L)
+library(RColorBrewer)
+nsamples <- ncol(HFFinal)
+col <- brewer.pal(nsamples, "Paired")
+par(mfrow=c(1,2))
+plot(density(lcpm[,1]), col=col[1], lwd=2, ylim=c(0,0.26), las=2, main="", xlab="")
+title(main="A. Raw data", xlab="Log-cpm")
+abline(v=lcpm.cutoff, lty=3)
+for (i in 2:nsamples){
+den <- density(lcpm[,i])
+lines(den$x, den$y, col=col[i], lwd=2)
+}
+legend("topright", samplenames, text.col=col, bty="n")
+lcpm <- cpm(HFFinal, log=TRUE)
+plot(density(lcpm[,1]), col=col[1], lwd=2, ylim=c(0,0.26), las=2, main="", xlab="")
+title(main="B. Filtered data", xlab="Log-cpm")
+abline(v=lcpm.cutoff, lty=3)
+for (i in 2:nsamples){
+den <- density(lcpm[,i])
+lines(den$x, den$y, col=col[i], lwd=2)
+}
+legend("topright", samplenames, text.col=col, bty="n")
+```
+```{r}
+HFFinal <- calcNormFactors(HFFinal, method = "TMM")
+HFFinal$samples$norm.factors
+
+HFFinal2 <- HFFinal
+HFFinal2$samples$norm.factors <- 1
+HFFinal2$counts[,1] <- ceiling(HFFinal2$counts[,1]*0.05)
+HFFinal2$counts[,2] <- HFFinal2$counts[,2]*5
+
+par(mfrow=c(1,2))
+lcpm <- cpm(HFFinal2, log=TRUE)
+boxplot(lcpm, las=2, col=col, main="")
+title(main="A. Example: Unnormalised data",ylab="Log-cpm")
+HFFinal2 <- calcNormFactors(HFFinal2)  
+HFFinal2$samples$norm.factors
+
+lcpm <- cpm(HFFinal2, log=TRUE)
+boxplot(lcpm, las=2, col=col, main="")
+title(main="B. Example: Normalised data",ylab="Log-cpm")
+```
+
+```{r}
+groupHF<-seqInfoHF$Label2
+levels(groupHF)<-c("CS","AO")
+groupHF
+```
+```{r}
+#plotMDS(HFFinal, col = as.numeric(seqInfoHF$Label))
+plotMDS(HFFinal, col = as.numeric(groupHF))
+
+```
+
+```{r}
+mmHF <- model.matrix(~0 + groupHF)
+yHF <- voom(HFFinal, mmHF, plot = T)
+```
+
+```{r}
+fitHF <- lmFit(yHF, mmHF)
+head(coef(fitHF))
+```
+
+```{r}
+contrHF <- makeContrasts(groupHFAO - groupHFCS, levels = colnames(coef(fitHF)))
+contrHF
+tmpHF <- contrasts.fit(fitHF, contrHF)
+tmpHF <- eBayes(tmpHF)
+top.tableHF <- topTable(tmpHF, sort.by = "P", n = Inf)
+head(top.tableHF, 20)
+```
+
+```{r}
+library(xlsx)
+write.xlsx(top.tableCtrl, "./TopTableCtrl.xlsx", sheetName="Sheet1",
+           col.names=TRUE, row.names=TRUE, append=FALSE)
+
+write.xlsx(top.tableHF, "./TopTableHF.xlsx", sheetName="Sheet1",
+           col.names=TRUE, row.names=TRUE, append=FALSE)
+
+```
+
+## Differential Expression Analysis using EdgeR
+https://web.stanford.edu/class/bios221/labs/rnaseq/lab_4_rnaseq.html
+### EdgeR for AO
+
+```{r}
+# filtering by cpm
+
+keep <- rowSums(cpm(AODGE)>100) >= 2
+AODGE <- AODGE[keep,]
+dim(AODGE)
+#reseting library sizes
+AODGE$samples$lib.size <- colSums(AODGE$counts)
+AODGE<-calcNormFactors(AODGE)
+```
+
+```{r}
+#data exploration
+plotMDS(AODGE, method="bcv", col=as.numeric(AODGE$samples$group))
+legend("bottomleft", as.character(unique(AODGE$samples$group)), col=1:3, pch=20)
+```
+
+```{r}
+AODGE$samples$group<-factor(AODGE$samples$group)
+AODGE1 <- estimateCommonDisp(AODGE, verbose=T)
+AODGE1 <- estimateTagwiseDisp(AODGE1)
+plotBCV(AODGE1)
+
+```
+
+```{r}
+design.matAO <- model.matrix(~ 0 + AODGE$samples$group)
+colnames(design.matAO) <- levels(AODGE$samples$group)
+AODGE2 <- estimateGLMCommonDisp(AODGE,design.matAO)
+AODGE2 <- estimateGLMTrendedDisp(AODGE2,design.matAO, method="power")
+# You can change method to "auto", "bin.spline", "power", "spline", "bin.loess".
+# The default is "auto" which chooses "bin.spline" when > 200 tags and "power" otherwise.
+AODGE2 <- estimateGLMTagwiseDisp(AODGE2,design.matAO)
+plotBCV(AODGE2)
+```
+
+Differential Expression Analysis
+```{r}
+etAO <- exactTest(AODGE1, pair=c(1,2))
+
+topTags(etAO, n=10)
+
+deAO <- decideTestsDGE(etAO, adjust.method="BH", p.value=0.05)
+summary(deAO)
+```
+
+```{r}
+write.xlsx(etAO, "./edgeRAO.xlsx", sheetName="Sheet1",
+           col.names=TRUE, row.names=TRUE, append=FALSE)
+
+```
+
+### EdgeR for CS
+
+```{r}
+# filtering by cpm
+
+keep <- rowSums(cpm(CSDGE)>100) >= 2
+CSDGE <- CSDGE[keep,]
+dim(CSDGE)
+#reseting library sizes
+CSDGE$samples$lib.size <- colSums(CSDGE$counts)
+CSDGE<-calcNormFactors(CSDGE)
+```
+
+```{r}
+#data exploration
+plotMDS(CSDGE, method="bcv", col=as.numeric(CSDGE$samples$group))
+legend("bottomleft", as.character(unique(CSDGE$samples$group)), col=1:3, pch=20)
+```
+
+```{r}
+CSDGE$samples$group<-factor(CSDGE$samples$group)
+CSDGE1 <- estimateCommonDisp(CSDGE, verbose=T)
+CSDGE1 <- estimateTagwiseDisp(CSDGE1)
+plotBCV(CSDGE1)
+
+```
+
+```{r}
+design.matCS <- model.matrix(~ 0 + CSDGE$samples$group)
+colnames(design.matCS) <- levels(CSDGE$samples$group)
+CSDGE2 <- estimateGLMCommonDisp(CSDGE,design.matCS)
+CSDGE2 <- estimateGLMTrendedDisp(CSDGE2,design.matCS, method="power")
+# You can change method to "auto", "bin.spline", "power", "spline", "bin.loess".
+# The default is "auto" which chooses "bin.spline" when > 200 tags and "power" otherwise.
+CSDGE2 <- estimateGLMTagwiseDisp(CSDGE2,design.matCS)
+plotBCV(CSDGE2)
+```
+
+ Differential Expression Analysis
+```{r}
+etCS <- exactTest(CSDGE1, pair=c(1,2))
+
+topTags(etCS, n=10)
+
+deCS <- decideTestsDGE(etCS, adjust.method="BH", p.value=0.05)
+summary(deCS)
+```
+
+```{r}
+write.xlsx(etCS, "./edgeRCS.xlsx", sheetName="Sheet1",
+           col.names=TRUE, row.names=TRUE, append=FALSE)
+
+```
+
+
+### EdgeR for Ctrl
+
+```{r}
+# filtering by cpm
+
+keep <- rowSums(cpm(CtrlDGE)>100) >= 2
+CtrlDGE <- CtrlDGE[keep,]
+dim(CtrlDGE)
+#reseting library sizes
+CtrlDGE$samples$lib.size <- colSums(CtrlDGE$counts)
+CtrlDGE<-calcNormFactors(CtrlDGE)
+```
+
+```{r}
+#data exploration
+plotMDS(CtrlDGE, method="bcv", col=as.numeric(CtrlDGE$samples$group))
+legend("bottomleft", as.character(unique(CtrlDGE$samples$group)), col=1:3, pch=20)
+```
+
+```{r}
+CtrlDGE$samples$group<-factor(CtrlDGE$samples$group)
+CtrlDGE1 <- estimateCommonDisp(CtrlDGE, verbose=T)
+CtrlDGE1 <- estimateTagwiseDisp(CtrlDGE1)
+plotBCV(CtrlDGE1)
+
+```
+
+```{r}
+design.matCtrl <- model.matrix(~ 0 + CtrlDGE$samples$group)
+colnames(design.matCtrl) <- levels(CtrlDGE$samples$group)
+CtrlDGE2 <- estimateGLMCommonDisp(CtrlDGE,design.matCtrl)
+CtrlDGE2 <- estimateGLMTrendedDisp(CtrlDGE2,design.matCtrl, method="power")
+# You can change method to "auto", "bin.spline", "power", "spline", "bin.loess".
+# The default is "auto" which chooses "bin.spline" when > 200 tags and "power" otherwise.
+CtrlDGE2 <- estimateGLMTagwiseDisp(CtrlDGE2,design.matCtrl)
+plotBCV(CtrlDGE2)
+```
+
+ Differential Expression Analysis
+```{r}
+etCtrl <- exactTest(CtrlDGE1, pair=c(1,2))
+
+topTags(etCtrl, n=10)
+
+deCtrl <- decideTestsDGE(etCtrl, adjust.method="BH", p.value=0.05)
+summary(deCtrl)
+```
+
+```{r}
+write.xlsx(etCtrl, "./edgeRCtrl.xlsx", sheetName="Sheet1",
+           col.names=TRUE, row.names=TRUE, append=FALSE)
+
+```
+### EdgeR for HF
+
+```{r}
+# filtering by cpm
+
+keep <- rowSums(cpm(HFDGE)>100) >= 2
+HFDGE <- HFDGE[keep,]
+dim(HFDGE)
+#reseting library sizes
+HFDGE$samples$lib.size <- colSums(HFDGE$counts)
+HFDGE<-calcNormFactors(HFDGE)
+```
+
+```{r}
+#data exploration
+plotMDS(HFDGE, method="bcv", col=as.numeric(HFDGE$samples$group))
+legend("bottomleft", as.character(unique(HFDGE$samples$group)), col=1:3, pch=20)
+```
+
+```{r}
+HFDGE$samples$group<-factor(HFDGE$samples$group)
+HFDGE1 <- estimateCommonDisp(HFDGE, verbose=T)
+HFDGE1 <- estimateTagwiseDisp(HFDGE1)
+plotBCV(HFDGE1)
+
+```
+
+```{r}
+design.matHF <- model.matrix(~ 0 + HFDGE$samples$group)
+colnames(design.matHF) <- levels(HFDGE$samples$group)
+HFDGE2 <- estimateGLMCommonDisp(HFDGE,design.matHF)
+HFDGE2 <- estimateGLMTrendedDisp(HFDGE2,design.matHF, method="power")
+# You can change method to "auto", "bin.spline", "power", "spline", "bin.loess".
+# The default is "auto" which chooses "bin.spline" when > 200 tags and "power" otherwise.
+HFDGE2 <- estimateGLMTagwiseDisp(HFDGE2,design.matHF)
+plotBCV(HFDGE2)
+```
+
+ Differential Expression Analysis
+```{r}
+etHF <- exactTest(HFDGE1, pair=c(1,2))
+
+topTags(etHF, n=10)
+
+deHF <- decideTestsDGE(etHF, adjust.method="BH", p.value=0.05)
+summary(deHF)
+
+
+```
+
+
+```{r}
+write.xlsx(etCtrl, "./edgeRHF.xlsx", sheetName="Sheet1",
+           col.names=TRUE, row.names=TRUE, append=FALSE)
+
+```
+
+### DESeq2 analysis
+
+
+```{r}
+
+dds <- DESeqDataSetFromMatrix(countData = serum_total,
+                              colData = seqInfo_EY,
+                              design= ~ Label + Label2)
+dds <- DESeq(dds)
+resultsNames(dds)
+```
+```{r}
+res<- results(dds,name="Label_HF_vs_Ctrl")
+res<- res[order(res$padj),]
+res
+```
+#### DESeq2 for AO
+```{r}
+library(DESeq2)
+
+ddsAO <- DESeqDataSetFromMatrix(countData = AODGE$counts,
+                              colData = seqInfoAO,
+                              design= ~ Label)
+ddsAO <- DESeq(ddsAO)
+resultsNames(ddsAO)
+resAO<- results(ddsAO)
+resAO<- resAO[order(resAO$padj),]
+resAO
+```
+
+
+```{r}
+write.xlsx(resAO, "./DESeq2AO.xlsx", sheetName="Sheet1",
+           col.names=TRUE, row.names=TRUE, append=FALSE)
+
+```
+
+#### DESeq2 for CS
+
+```{r}
+ddsCS <- DESeqDataSetFromMatrix(countData = CSDGE$counts,
+                              colData = seqInfoCS,
+                              design= ~ Label)
+ddsCS <- DESeq(ddsCS)
+resultsNames(ddsCS)
+resCS<- results(ddsCS)
+resCS<- resCS[order(resCS$padj),]
+resCS
+
+
+```
+
+
+```{r}
+write.xlsx(resCS, "./DESeq2CS.xlsx", sheetName="Sheet1",
+           col.names=TRUE, row.names=TRUE, append=FALSE)
+
+```
