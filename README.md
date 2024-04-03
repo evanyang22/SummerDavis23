@@ -12,8 +12,9 @@ Functions of mirDeep2 (https://github.com/rajewsky-lab/mirdeep2)
 
 #### Steps (6_14_Evan_miRNA.ipynb)
 1. Trim files using trimmer (given in miRNA_trimgalore_script.py) (don't forget to activate cutadaptenv)
-2. Store trimmed files in a folder named "Input"
-3. Index builds using bowtie-build in the terminal: $ bowtie-build reference_sequence.fasta index_name
+   Tutorial for cutadaptenv is here (https://cutadapt.readthedocs.io/en/stable/installation.html)
+3. Store trimmed files in a folder named "Input"
+4. Index builds using bowtie-build in the terminal: $ bowtie-build reference_sequence.fasta index_name
 
 Should generate .EBWT files
  
