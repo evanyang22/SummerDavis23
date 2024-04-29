@@ -1,0 +1,23 @@
+---
+title: "NanostringAggregator"
+output: html_document
+date: "2024-04-29"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library("nanostringr")
+store<-read_rcc(path="./rccGZ/")
+```
+
+```{r}
+library("xlsx")
+write.xlsx(store$raw, "./NanoStringRawData.xlsx")
+```
+
+```{r}
+write.xlsx(store$exp,"./NanostringSupplementary.xlsx")
+```
