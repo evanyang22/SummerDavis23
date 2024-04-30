@@ -1,0 +1,58 @@
+---
+title: "CleanUpMiRNAStudyData"
+output: html_document
+date: "2024-04-29"
+---
+
+## Study 2
+
+```{r}
+library(xlsx)
+library(dplyr)
+Study2<-read.xlsx("./Study 2/NanoStringRawData.xlsx",sheetIndex = 1)
+
+```
+https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE243485 
+According to link above 326 to 333 are healthy, rest are trauma
+```{r}
+cleanStudy2<-Study2[,-c(1,2,4)]#removing the columns that are not name
+
+
+
+# Columns 2 to 9
+cols_healthy <- paste0(names(cleanStudy2)[2:9], "_healthy")
+
+# Columns 9 to 25
+cols_trauma <- paste0(names(cleanStudy2)[9:25], "_trauma")
+
+# Renaming columns
+cleanStudy2 <- cleanStudy2 %>%
+  rename_at(vars(2:9), ~cols_healthy) %>%
+  rename_at(vars(9:25), ~cols_trauma)
+```
+
+```{r}
+write.xlsx(cleanStudy2,"./Study 2/NanoStringRawData.xlsx",sheet="CleanedData",append=TRUE,row.names=FALSE)
+```
+
+## Study 4
+
+```{r}
+Study4<-read.csv("./Study 4/GSE197272_samples.csv")
+
+Study4[is.na(Study4)] <- 0 #replacing NAs with 0
+
+write.xlsx(Study4,"./Study 4/CleanedDataStudy4.xlsx",row.names=FALSE)
+```
+
+##Study 5
+
+```{r}
+Study5<-read.xlsx("./Study 5/GSE144777_Processed_data.xlsx",sheetName="mirna_rawcounts",startRow=3)
+Study5<-Study5[,-c(2:4)]
+
+```
+
+```{r}
+write.xlsx(Study5,"./Study 5/CleanedDataStudy5.xlsx",row.names=FALSE)
+```
